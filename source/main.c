@@ -293,7 +293,6 @@ void dump_sysnand()
 {
 	h_cfg.emummc_force_disable = true;
 	emu_cfg.enabled = false;
-	b_cfg.extra_cfg &= ~EXTRA_CFG_DUMP_EMUMMC;
 	dump_keys();
 }
 
@@ -302,7 +301,6 @@ void dump_emunand()
 	if (h_cfg.emummc_force_disable)
 		return;
 	emu_cfg.enabled = true;
-	b_cfg.extra_cfg |= EXTRA_CFG_DUMP_EMUMMC;
 	dump_keys();
 }
 
