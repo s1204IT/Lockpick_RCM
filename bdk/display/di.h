@@ -652,6 +652,9 @@
 #define DCS_CONTROL_DISPLAY_DIMMING_CTRL    BIT(3)
 #define DCS_CONTROL_DISPLAY_BRIGHTNESS_CTRL BIT(5)
 
+#define PANEL_OLED_BL_COEFF  82 // 82%.
+#define PANEL_OLED_BL_OFFSET 45 // Least legible backlight duty.
+
 /* Switch Panels:
  *
  * 6.2" panels for Icosa and Iowa skus:
@@ -671,7 +674,7 @@
  * [40] XX [10]: Vendor 40 [UNCONFIRMED ID]
  *
  * 7.0" OLED panels for Aula skus:
- * [50] XX [20]: Samsung AMS700XXXX [UNCONFIRMED ID and MODEL]
+ * [50] 9B [20]: Samsung AMS699VC01-0 (Rev 2.5)
  */
 
 /* Display ID Decoding:
@@ -703,7 +706,7 @@ enum
 	PANEL_INL_2J055IA_27A = 0x1020,
 	PANEL_AUO_A055TAN01   = 0x1030,
 	PANEL_V40_55_UNK      = 0x1040,
-	PANEL_SAM_70_UNK      = 0x2050
+	PANEL_SAM_AMS699VC01  = 0x2050
 };
 
 void display_init();
