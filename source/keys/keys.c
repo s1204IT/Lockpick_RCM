@@ -212,6 +212,7 @@ static void _derive_bis_keys(key_derivation_ctx_t *keys) {
     }
     _generate_specific_aes_key(8, keys, &keys->bis_key[0], &bis_key_sources[0], key_generation);
     // kek = generate_kek(bkeks, devkey, aeskek, aeskey)
+    _get_device_key(8, keys, keys->temp_key, key_generation);
     _generate_kek(8, bis_kek_source, keys->temp_key, aes_kek_generation_source, aes_key_generation_source);
     se_aes_crypt_ecb(8, DECRYPT, keys->bis_key[1], AES_128_KEY_SIZE * 2, bis_key_sources[1], AES_128_KEY_SIZE * 2); // bkey = unwrap(bkeys, kek)
     se_aes_crypt_ecb(8, DECRYPT, keys->bis_key[2], AES_128_KEY_SIZE * 2, bis_key_sources[2], AES_128_KEY_SIZE * 2);
