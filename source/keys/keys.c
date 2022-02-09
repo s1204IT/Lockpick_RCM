@@ -461,8 +461,23 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
         return false;
     }
 
-    // settings sysmodule manually zeroes this out below cal version 9
-    u32 keypair_generation = cal0->version <= 8 ? 0 : cal0->ext_ecc_rsa2048_eticket_key_ver;
+    u32 keypair_generation = 0;
+    const void *eticket_device_key = NULL;
+    const void *eticket_iv = NULL;
+
+    if (cal0->ext_ecc_rsa2048_eticket_key_crc == crc16_calc(cal0->ext_ecc_rsa2048_eticket_key_iv, 0x24E)) {
+        eticket_device_key = cal0->ext_ecc_rsa2048_eticket_key;
+        eticket_iv = cal0->ext_ecc_rsa2048_eticket_key_iv;
+
+        // settings sysmodule manually zeroes this out below cal version 9
+        keypair_generation = cal0->version <= 8 ? 0 : cal0->ext_ecc_rsa2048_eticket_key_ver;
+    } else if (cal0->rsa2048_eticket_key_crc == crc16_calc(cal0->rsa2048_eticket_key_iv, 0x22E)) {
+        eticket_device_key = cal0->rsa2048_eticket_key;
+        eticket_iv = cal0->rsa2048_eticket_key_iv;
+    } else {
+        EPRINTF("Crc16 error reading device key.");
+        return false;
+    }
 
     if (keypair_generation) {
         keypair_generation--;
@@ -478,7 +493,7 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     }
 
     se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
-    se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), cal0->ext_ecc_rsa2048_eticket_key, sizeof(cal0->ext_ecc_rsa2048_eticket_key), cal0->ext_ecc_rsa2048_eticket_key_iv);
+    se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), eticket_device_key, sizeof(rsa_keypair), eticket_iv);
 
     // Check public exponent is 65537 big endian
     if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {

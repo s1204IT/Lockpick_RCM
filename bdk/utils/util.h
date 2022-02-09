@@ -83,6 +83,7 @@ u8   bit_count(u32 val);
 u32  bit_count_mask(u8 bits);
 
 void exec_cfg(u32 *base, const cfg_op_t *ops, u32 num_ops);
+u16  crc16_calc(const u8 *buf, u32 len);
 u32  crc32_calc(u32 crc, const u8 *buf, u32 len);
 
 u32  get_tmr_us();

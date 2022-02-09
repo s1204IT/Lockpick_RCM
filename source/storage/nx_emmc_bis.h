@@ -124,8 +124,10 @@ typedef struct _nx_emmc_cal0_t
 	u8   crc16_pad20[0x10];
 	u8   gc_cert[0x400];
 	u8   gc_cert_sha256[0x20];
-	u8   rsa2048_eticket_key[0x220];
-	u8   crc16_pad21[0x10];
+	u8   rsa2048_eticket_key_iv[0x10];
+	u8   rsa2048_eticket_key[0x210];
+	u8   crc16_pad21[0xE];
+	u16  rsa2048_eticket_key_crc;
 	u8   rsa2048_eticket_cert[0x240];
 	u8   crc16_pad22[0x10];
 
@@ -166,7 +168,8 @@ typedef struct _nx_emmc_cal0_t
 	u8   ext_ecc_rsa2048_eticket_key_iv[0x10];
 	u8   ext_ecc_rsa2048_eticket_key[0x230];
 	u32  ext_ecc_rsa2048_eticket_key_ver;
-	u8   crc16_pad38[0xC];
+	u8   crc16_pad38[0xA];
+	u16  ext_ecc_rsa2048_eticket_key_crc;
 	u8   ext_ssl_key[0x130];
 	u8   crc16_pad39[0x10];
 	u8   ext_gc_key[0x130];

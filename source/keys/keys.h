@@ -67,9 +67,7 @@ typedef struct {
     u8 private_exponent[RSA_2048_KEY_SIZE];
     u8 modulus[RSA_2048_KEY_SIZE];
     u8 public_exponent[4];
-    u8 reserved[0x14];
-    u64 device_id;
-    u8 gmac[0x10];
+    u8 reserved[0xC];
 } rsa_keypair_t;
 
 typedef struct {
