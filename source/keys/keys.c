@@ -140,8 +140,8 @@ static void _derive_keyblob_keys(key_derivation_ctx_t *keys) {
     bool have_keyblobs = true;
 
     if (FUSE(FUSE_PRIVATE_KEY0) == 0xFFFFFFFF) {
-        u8 *aes_keys = (u8 *)calloc(0x1000, 1);
-        se_get_aes_keys(aes_keys + 0x800, aes_keys, AES_128_KEY_SIZE);
+        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
+        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, AES_128_KEY_SIZE);
         memcpy(keys->sbk, aes_keys + 14 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
         free(aes_keys);
     } else {
@@ -424,7 +424,7 @@ static bool _derive_sd_seed(key_derivation_ctx_t *keys) {
     }
 
     u8 read_buf[0x20] __attribute__((aligned(4))) = {0};
-    for (u32 i = 0x8000; i < f_size(&fp); i += 0x4000) {
+    for (u32 i = SZ_32K; i < f_size(&fp); i += SZ_16K) {
         if (f_lseek(&fp, i) || f_read(&fp, read_buf, 0x20, &read_bytes) || read_bytes != 0x20)
             break;
         if (!memcmp(keys->temp_key, read_buf, sizeof(keys->temp_key))) {
@@ -493,7 +493,7 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     se_rsa_key_set(0, rsa_keypair.modulus, sizeof(rsa_keypair.modulus), rsa_keypair.private_exponent, sizeof(rsa_keypair.private_exponent));
 
-    const u32 buf_size = 0x4000;
+    const u32 buf_size = SZ_16K;
     _get_titlekeys_from_save(buf_size, keys->save_mac_key, titlekey_buffer, NULL);
     _get_titlekeys_from_save(buf_size, keys->save_mac_key, titlekey_buffer, &rsa_keypair);
 
@@ -639,7 +639,7 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
         return;
     }
 
-    u32 text_buffer_size = MAX(_titlekey_count * sizeof(titlekey_text_buffer_t) + 1, 0x4000);
+    u32 text_buffer_size = MAX(_titlekey_count * sizeof(titlekey_text_buffer_t) + 1, SZ_16K);
     text_buffer = (char *)calloc(1, text_buffer_size);
 
     SAVE_KEY(aes_kek_generation_source);
@@ -816,8 +816,8 @@ static void _derive_keys() {
             return;
         }
 
-        u8 *aes_keys = (u8 *)calloc(0x1000, 1);
-        se_get_aes_keys(aes_keys + 0x800, aes_keys, AES_128_KEY_SIZE);
+        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
+        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, AES_128_KEY_SIZE);
         memcpy(&dev_keys.tsec_root_key, aes_keys + 11 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
         memcpy(keys->tsec_key, aes_keys + 12 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
         memcpy(&prod_keys.tsec_root_key, aes_keys + 13 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);

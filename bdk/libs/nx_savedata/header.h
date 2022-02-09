@@ -61,7 +61,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #define VERSION_RMAP         0x10000
 #define VERSION_IVFC         0x20000
 
-#define SAVE_BLOCK_SIZE_DEFAULT 0x4000
+#define SAVE_BLOCK_SIZE_DEFAULT SZ_16K
 
 #define SAVE_NUM_HEADERS 2
 
@@ -232,6 +232,6 @@ typedef struct {
     };
 } save_header_t;
 
-static_assert(sizeof(save_header_t) == 0x4000, "Save header size is wrong!");
+static_assert(sizeof(save_header_t) == SZ_16K, "Save header size is wrong!");
 
 #endif

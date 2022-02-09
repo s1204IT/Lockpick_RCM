@@ -41,7 +41,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #include <stdint.h>
 
 #define RMAP_ALIGN_SMALL 0x200
-#define RMAP_ALIGN_LARGE 0x4000
+#define RMAP_ALIGN_LARGE SZ_16K
 
 typedef struct {
     uint32_t magic; /* RMAP */

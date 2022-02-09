@@ -58,9 +58,9 @@ typedef struct {
 } ticket_record_t;
 
 typedef struct {
-    u8 read_buffer[0x40000];
-    u8 rights_ids[0x40000 / 0x10][0x10];
-    u8 titlekeys[0x40000 / 0x10][0x10];
+    u8 read_buffer[SZ_256K];
+    u8 rights_ids[SZ_256K / 0x10][0x10];
+    u8 titlekeys[SZ_256K / 0x10][0x10];
 } titlekey_buffer_t;
 
 typedef struct {
