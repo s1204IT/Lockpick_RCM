@@ -235,12 +235,12 @@ static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
 
     if (_key_exists(keys->master_key[0])) {
         for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_kek_seed_03[i];
+            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
         _generate_kek(8, eticket_rsa_kekek_source, keys->master_key[0], keys->temp_key, NULL);
         se_aes_crypt_block_ecb(8, DECRYPT, keys->eticket_rsa_kek, is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source);
 
         for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_kek_seed_01[i];
+            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_decrypt_device_unique_data[i];
         _generate_kek(8, ssl_rsa_kek_source_x, keys->master_key[0], keys->temp_key, NULL);
         se_aes_crypt_block_ecb(8, DECRYPT, keys->ssl_rsa_kek, ssl_rsa_kek_source_y);
     }
@@ -483,7 +483,7 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     if (keypair_generation) {
         keypair_generation--;
         for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_kek_seed_03[i];
+            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
         u32 temp_device_key[AES_128_KEY_SIZE / 4] = {0};
         _get_device_key(7, keys, temp_device_key, keypair_generation);
         _generate_kek(7, eticket_rsa_kekek_source, temp_device_key, keys->temp_key, NULL);
@@ -498,8 +498,20 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     // Check public exponent is 65537 big endian
     if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {
-        EPRINTF("Invalid public exponent.");
-        return false;
+        for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
+            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
+        _generate_kek(8, eticket_rsa_kekek_source, keys->master_key[0], keys->temp_key, NULL);
+        se_aes_crypt_block_ecb(8, DECRYPT, keys->temp_key, eticket_rsa_kek_source_legacy);
+
+        se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
+        se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), eticket_device_key, sizeof(rsa_keypair), eticket_iv);
+
+        if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {
+            EPRINTF("Invalid public exponent.");
+            return false;
+        } else {
+            memcpy(keys->eticket_rsa_kek, keys->temp_key, sizeof(keys->eticket_rsa_kek));
+        }
     }
 
     if (!_test_key_pair(rsa_keypair.public_exponent, rsa_keypair.private_exponent, rsa_keypair.modulus)) {
@@ -702,10 +714,10 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
     SAVE_KEY(per_console_key_source);
     SAVE_KEY(retail_specific_aes_key_source);
     for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-        keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_kek_seed_03[i];
+        keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
     SAVE_KEY_VAR(rsa_oaep_kek_generation_source, keys->temp_key);
     for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-        keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_kek_seed_01[i];
+        keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_decrypt_device_unique_data[i];
     SAVE_KEY_VAR(rsa_private_kek_generation_source, keys->temp_key);
     SAVE_KEY(save_mac_kek_source);
     SAVE_KEY_VAR(save_mac_key, keys->save_mac_key);
