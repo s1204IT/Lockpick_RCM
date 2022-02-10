@@ -73,7 +73,7 @@ static ALWAYS_INLINE u32 _read_be_u32(const void *buffer, u32 offset) {
 static int  _key_exists(const void *data) { return memcmp(data, "\x00\x00\x00\x00\x00\x00\x00\x00", 8) != 0; };
 static void _save_key(const char *name, const void *data, u32 len, char *outbuf);
 static void _save_key_family(const char *name, const void *data, u32 start_key, u32 num_keys, u32 len, char *outbuf);
-static void _generate_kek(u32 ks, const void *key_source, void *master_key, const void *kek_seed, const void *key_seed);
+static void _generate_kek(u32 ks, const void *key_source, const void *master_key, const void *kek_seed, const void *key_seed);
 static void _generate_specific_aes_key(u32 ks, key_derivation_ctx_t *keys, void *out_key, const void *key_source, u32 key_generation);
 static void _get_device_key(u32 ks, key_derivation_ctx_t *keys, void *out_device_key, u32 revision);
 // titlekey functions
@@ -226,6 +226,14 @@ static void _derive_non_unique_keys(key_derivation_ctx_t *keys, bool is_dev) {
     }
 }
 
+static void _derive_eticket_rsa_kek(key_derivation_ctx_t *keys, u32 ks, void *out_rsa_kek, const void *master_key, const void *kek_source) {
+    u8 kek_seed[AES_128_KEY_SIZE];
+    for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
+        kek_seed[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
+    _generate_kek(ks, eticket_rsa_kekek_source, master_key, kek_seed, NULL);
+    se_aes_crypt_block_ecb(ks, DECRYPT, out_rsa_kek, kek_source);
+}
+
 static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
     if (_key_exists(keys->device_key) || (_key_exists(keys->master_key[0]) && _key_exists(keys->device_key_4x))) {
         _get_device_key(8, keys, keys->temp_key, 0);
@@ -234,10 +242,7 @@ static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
     }
 
     if (_key_exists(keys->master_key[0])) {
-        for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
-        _generate_kek(8, eticket_rsa_kekek_source, keys->master_key[0], keys->temp_key, NULL);
-        se_aes_crypt_block_ecb(8, DECRYPT, keys->eticket_rsa_kek, is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source);
+        _derive_eticket_rsa_kek(keys, 8, keys->eticket_rsa_kek, keys->master_key[0], is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source);
 
         for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
             keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_decrypt_device_unique_data[i];
@@ -440,7 +445,7 @@ static bool _derive_sd_seed(key_derivation_ctx_t *keys) {
     return true;
 }
 
-static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer) {
+static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
     if (!_key_exists(keys->eticket_rsa_kek)) {
         return false;
     }
@@ -482,12 +487,8 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     if (keypair_generation) {
         keypair_generation--;
-        for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
-        u32 temp_device_key[AES_128_KEY_SIZE / 4] = {0};
-        _get_device_key(7, keys, temp_device_key, keypair_generation);
-        _generate_kek(7, eticket_rsa_kekek_source, temp_device_key, keys->temp_key, NULL);
-        se_aes_crypt_block_ecb(7, DECRYPT, keys->eticket_rsa_kek_personalized, eticket_rsa_kek_source);
+        _get_device_key(7, keys, keys->temp_key, keypair_generation);
+        _derive_eticket_rsa_kek(keys, 7, keys->eticket_rsa_kek_personalized, keys->temp_key, is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source);
         memcpy(keys->temp_key, keys->eticket_rsa_kek_personalized, sizeof(keys->temp_key));
     } else {
         memcpy(keys->temp_key, keys->eticket_rsa_kek, sizeof(keys->temp_key));
@@ -498,10 +499,8 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     // Check public exponent is 65537 big endian
     if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {
-        for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_import_es_device_key[i];
-        _generate_kek(8, eticket_rsa_kekek_source, keys->master_key[0], keys->temp_key, NULL);
-        se_aes_crypt_block_ecb(8, DECRYPT, keys->temp_key, eticket_rsa_kek_source_legacy);
+        // try legacy kek source
+        _derive_eticket_rsa_kek(keys, 7, keys->temp_key, keys->master_key[0], eticket_rsa_kek_source_legacy);
 
         se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
         se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), eticket_device_key, sizeof(rsa_keypair), eticket_iv);
@@ -530,7 +529,7 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     return true;
 }
 
-static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer) {
+static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
     // Set BIS keys.
     // PRODINFO/PRODINFOF
     se_aes_key_set(0, keys->bis_key[0] + 0x00, AES_128_KEY_SIZE);
@@ -571,7 +570,7 @@ static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
         EPRINTF("Unable to get SD seed.");
     }
 
-    bool res = _derive_titlekeys(keys, titlekey_buffer);
+    bool res = _derive_titlekeys(keys, titlekey_buffer, is_dev);
     if (!res) {
         EPRINTF("Unable to derive titlekeys.");
     }
@@ -882,7 +881,7 @@ static void _derive_keys() {
     if (!emmc_storage.initialized) {
         EPRINTF("eMMC not initialized.\nSkipping SD seed and titlekeys.");
     } else if (_key_exists(keys->bis_key[2])) {
-        _derive_emmc_keys(keys, titlekey_buffer);
+        _derive_emmc_keys(keys, titlekey_buffer, is_dev);
     } else {
         EPRINTF("Missing needed BIS keys.\nSkipping SD seed and titlekeys.");
     }
@@ -963,7 +962,7 @@ static void _save_key_family(const char *name, const void *data, u32 start_key, 
     free(temp_name);
 }
 
-static void _generate_kek(u32 ks, const void *key_source, void *master_key, const void *kek_seed, const void *key_seed) {
+static void _generate_kek(u32 ks, const void *key_source, const void *master_key, const void *kek_seed, const void *key_seed) {
     if (!_key_exists(key_source) || !_key_exists(master_key) || !_key_exists(kek_seed))
         return;
 
