@@ -304,25 +304,79 @@ void dump_emunand()
 	dump_keys();
 }
 
+void dump_mariko_partial_keys();
+
+ment_t ment_partials[] = {
+	MDEF_BACK(colors[0]),
+	MDEF_CHGLINE(),
+	MDEF_CAPTION("This dumps the results of writing zeros", colors[1]),
+	MDEF_CAPTION("over consecutive 32-bit portions of each", colors[1]),
+	MDEF_CAPTION("keyslot, the results of which can then", colors[1]),
+	MDEF_CAPTION("be bruteforced quickly on a computer", colors[1]),
+	MDEF_CAPTION("to recover keys from unreadable keyslots.", colors[1]),
+	MDEF_CHGLINE(),
+	MDEF_CAPTION("This includes the Mariko KEK and BEK", colors[2]),
+	MDEF_CAPTION("as well as the unique SBK.", colors[2]),
+	MDEF_CHGLINE(),
+	MDEF_CAPTION("These are not useful for most users", colors[3]),
+	MDEF_CAPTION("but are included for archival purposes.", colors[3]),
+	MDEF_CHGLINE(),
+	MDEF_CAPTION("Warning: this wipes keyslots!", colors[4]),
+	MDEF_CAPTION("The console must be completely restarted!", colors[4]),
+	MDEF_CAPTION("Modchip must run again to fix the keys!", colors[4]),
+	MDEF_CAPTION("---------------", colors[5]),
+	MDEF_HANDLER("Dump Mariko Partials", dump_mariko_partial_keys, colors[0]),
+	MDEF_END()
+};
+
+menu_t menu_partials = { ment_partials, NULL, 0, 0 };
+
 power_state_t STATE_POWER_OFF           = POWER_OFF_RESET;
 power_state_t STATE_REBOOT_FULL         = POWER_OFF_REBOOT;
 power_state_t STATE_REBOOT_RCM          = REBOOT_RCM;
 power_state_t STATE_REBOOT_BYPASS_FUSES = REBOOT_BYPASS_FUSES;
 
 ment_t ment_top[] = {
-	MDEF_HANDLER("Dump from SysNAND", dump_sysnand, COLOR_RED),
-	MDEF_HANDLER("Dump from EmuNAND", dump_emunand, COLOR_ORANGE),
-	MDEF_CAPTION("---------------", COLOR_YELLOW),
-	MDEF_HANDLER("Payloads...", launch_tools, COLOR_GREEN),
-	MDEF_HANDLER("Reboot to hekate", launch_hekate, COLOR_BLUE),
-	MDEF_CAPTION("---------------", COLOR_VIOLET),
-	MDEF_HANDLER_EX("Reboot (OFW)", &STATE_REBOOT_BYPASS_FUSES, power_set_state_ex, COLOR_RED),
-	MDEF_HANDLER_EX("Reboot (RCM)", &STATE_REBOOT_RCM, power_set_state_ex, COLOR_ORANGE),
-	MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex, COLOR_YELLOW),
+	MDEF_HANDLER("Dump from SysNAND", dump_sysnand, colors[0]),
+	MDEF_HANDLER("Dump from EmuNAND", dump_emunand, colors[1]),
+	MDEF_CAPTION("---------------", colors[2]),
+	MDEF_MENU("Dump Mariko Partials (requires reboot)", &menu_partials, colors[3]),
+	MDEF_CAPTION("---------------", colors[4]),
+	MDEF_HANDLER("Payloads...", launch_tools, colors[5]),
+	MDEF_HANDLER("Reboot to hekate", launch_hekate, colors[0]),
+	MDEF_CAPTION("---------------", colors[1]),
+	MDEF_HANDLER_EX("Reboot (OFW)", &STATE_REBOOT_BYPASS_FUSES, power_set_state_ex, colors[2]),
+	MDEF_HANDLER_EX("Reboot (RCM)", &STATE_REBOOT_RCM, power_set_state_ex, colors[3]),
+	MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex, colors[4]),
 	MDEF_END()
 };
 
 menu_t menu_top = { ment_top, NULL, 0, 0 };
+
+void grey_out_menu_item(ment_t *menu)
+{
+	menu->type = MENT_CAPTION;
+	menu->color = 0xFF555555;
+	menu->handler = NULL;
+}
+
+void dump_mariko_partial_keys()
+{
+	if (h_cfg.t210b01) {
+		int res = save_mariko_partial_keys(0, 16, false);
+		if (res == 0 || res == 3)
+		{
+			// Grey out dumping menu items as the keyslots have been invalidated.
+			grey_out_menu_item(&ment_top[0]);
+			grey_out_menu_item(&ment_top[1]);
+			grey_out_menu_item(&ment_top[3]);
+			grey_out_menu_item(&ment_partials[18]);
+		}
+
+		gfx_printf("\n%kPress a button to return to the menu.", COLOR_ORANGE);
+		btn_wait();
+	}
+}
 
 extern void pivot_stack(u32 stack_top);
 
@@ -373,30 +427,24 @@ void ipl_main()
 	// Grey out emummc option if not present.
 	if (h_cfg.emummc_force_disable)
 	{
-		ment_top[1].type = MENT_CAPTION;
-		ment_top[1].color = 0xFF555555;
-		ment_top[1].handler = NULL;
+		grey_out_menu_item(&ment_top[1]);
 	}
 
 	// Grey out reboot to RCM option if on Mariko or patched console.
 	if (h_cfg.t210b01 || h_cfg.rcm_patched)
 	{
-		ment_top[7].type = MENT_CAPTION;
-		ment_top[7].color = 0xFF555555;
-		ment_top[7].handler = NULL;
+		grey_out_menu_item(&ment_top[9]);
 	}
 
-	if (h_cfg.rcm_patched)
-	{
-		ment_top[7].data = &STATE_REBOOT_FULL;
+	// Grey out Mariko partial dump option on Erista.
+	if (!h_cfg.t210b01) {
+		grey_out_menu_item(&ment_top[3]);
 	}
 
 	// Grey out reboot to hekate option if no update.bin found.
 	if (f_stat("bootloader/update.bin", NULL))
 	{
-		ment_top[4].type = MENT_CAPTION;
-		ment_top[4].color = 0xFF555555;
-		ment_top[4].handler = NULL;
+		grey_out_menu_item(&ment_top[6]);
 	}
 
 	minerva_change_freq(FREQ_800);

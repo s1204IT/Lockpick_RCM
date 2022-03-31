@@ -583,10 +583,14 @@ static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 // The security engine supports partial key override for locked keyslots
 // This allows for a manageable brute force on a PC
 // Then the Mariko AES class keys, KEK, BEK, unique SBK and SSK can be recovered
-static void _save_mariko_partial_keys(u32 start, u32 count, bool append) {
+int save_mariko_partial_keys(u32 start, u32 count, bool append) {
     if (start + count > SE_AES_KEYSLOT_COUNT) {
-        return;
+        return 1;
     }
+
+    display_backlight_brightness(h_cfg.backlight, 1000);
+    gfx_clear_partial_grey(0x1B, 32, 1224);
+    gfx_con_setpos(0, 32);
 
     u32 pos = 0;
     u32 zeros[AES_128_KEY_SIZE / 4] = {0};
@@ -632,11 +636,11 @@ static void _save_mariko_partial_keys(u32 start, u32 count, bool append) {
 
     if (strlen(text_buffer) == 0) {
         EPRINTFARGS("Failed to dump partial keys %d-%d.", start, start + count - 1);
-        return;
+        free(text_buffer);
+        return 2;
     }
 
     FIL fp;
-    u32 res = 0;
     BYTE mode = FA_WRITE;
 
     if (append) {
@@ -645,10 +649,16 @@ static void _save_mariko_partial_keys(u32 start, u32 count, bool append) {
         mode |= FA_CREATE_ALWAYS;
     }
 
-    res = f_open(&fp, "sd:/switch/partialaes.keys", mode);
-    if (res) {
+    if (!sd_mount()) {
+        EPRINTF("Unable to mount SD.");
+        free(text_buffer);
+        return 3;
+    }
+
+    if (f_open(&fp, "sd:/switch/partialaes.keys", mode)) {
         EPRINTF("Unable to write partial keys to SD.");
-        return;
+        free(text_buffer);
+        return 3;
     }
 
     f_write(&fp, text_buffer, strlen(text_buffer), NULL);
@@ -657,6 +667,8 @@ static void _save_mariko_partial_keys(u32 start, u32 count, bool append) {
     gfx_printf("%kWrote partials to sd:/switch/partialaes.keys\n", colors[(color_idx++) % 6]);
 
     free(text_buffer);
+
+    return 0;
 }
 
 static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
@@ -756,10 +768,6 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
     } else
         EPRINTF("Unable to save keys to SD.");
 
-    if (h_cfg.t210b01) {
-        _save_mariko_partial_keys(12, 4, true);
-    }
-
     if (_titlekey_count == 0 || !titlekey_buffer) {
         free(text_buffer);
         return;
@@ -797,12 +805,6 @@ static bool _check_keyslot_access() {
 static void _derive_keys() {
     if (!f_stat("sd:/switch/partialaes.keys", NULL)) {
         f_unlink("sd:/switch/partialaes.keys");
-    }
-
-    minerva_periodic_training();
-
-    if (h_cfg.t210b01) {
-        _save_mariko_partial_keys(0, 12, false);
     }
 
     minerva_periodic_training();

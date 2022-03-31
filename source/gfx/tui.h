@@ -54,8 +54,8 @@ typedef struct _menu_t
 #define MDEF_END() {MENT_END}
 #define MDEF_HANDLER(caption, _handler, color) { MENT_HANDLER, caption, color, NULL, { .handler = _handler } }
 #define MDEF_HANDLER_EX(caption, data, _handler, color) { MENT_HANDLER, caption, color, data, { .handler = _handler } }
-#define MDEF_MENU(caption, _menu) { MENT_MENU, caption, 0, NULL, { .menu = _menu } }
-#define MDEF_BACK() { MENT_BACK, "Back" }
+#define MDEF_MENU(caption, _menu, color) { MENT_MENU, caption, color, NULL, { .menu = _menu } }
+#define MDEF_BACK(color) { MENT_BACK, "Back", color }
 #define MDEF_CAPTION(caption, color) { MENT_CAPTION, caption, color }
 #define MDEF_CHGLINE() {MENT_CHGLINE}
 
