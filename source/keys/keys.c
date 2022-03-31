@@ -802,6 +802,34 @@ static bool _check_keyslot_access() {
     return memcmp(test_data, "\x7b\x1d\x29\xa1\x6c\xf8\xcc\xab\x84\xf0\xb8\xa5\x98\xe4\x2f\xa6", SE_KEY_128_SIZE) == 0;
 }
 
+static void _derive_master_keys(key_derivation_ctx_t *prod_keys, key_derivation_ctx_t *dev_keys, bool is_dev) {
+    key_derivation_ctx_t *keys = is_dev ? dev_keys : prod_keys;
+
+    if (h_cfg.t210b01) {
+        _derive_master_key_mariko(keys, is_dev);
+        minerva_periodic_training();
+        _derive_master_keys_from_latest_key(keys, is_dev);
+    } else {
+        int res = _run_ams_keygen(keys);
+        if (res) {
+            return;
+        }
+
+        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
+        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, AES_128_KEY_SIZE);
+        memcpy(&dev_keys->tsec_root_key, aes_keys + 11 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
+        memcpy(keys->tsec_key, aes_keys + 12 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
+        memcpy(&prod_keys->tsec_root_key, aes_keys + 13 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
+        free(aes_keys);
+
+        _derive_master_keys_from_latest_key(prod_keys, false);
+        minerva_periodic_training();
+        _derive_master_keys_from_latest_key(dev_keys, true);
+        minerva_periodic_training();
+        _derive_keyblob_keys(keys);
+    }
+}
+
 static void _derive_keys() {
     if (!f_stat("sd:/switch/partialaes.keys", NULL)) {
         f_unlink("sd:/switch/partialaes.keys");
@@ -834,30 +862,7 @@ static void _derive_keys() {
     key_derivation_ctx_t __attribute__((aligned(4))) prod_keys = {0}, dev_keys = {0};
     key_derivation_ctx_t *keys = is_dev ? &dev_keys : &prod_keys;
 
-    // Master key derivation
-    if (h_cfg.t210b01) {
-        _derive_master_key_mariko(keys, is_dev);
-        minerva_periodic_training();
-        _derive_master_keys_from_latest_key(keys, is_dev);
-    } else {
-        int res = _run_ams_keygen(keys);
-        if (res) {
-            return;
-        }
-
-        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
-        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, AES_128_KEY_SIZE);
-        memcpy(&dev_keys.tsec_root_key, aes_keys + 11 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
-        memcpy(keys->tsec_key, aes_keys + 12 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
-        memcpy(&prod_keys.tsec_root_key, aes_keys + 13 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
-        free(aes_keys);
-
-        _derive_master_keys_from_latest_key(&prod_keys, false);
-        minerva_periodic_training();
-        _derive_master_keys_from_latest_key(&dev_keys, true);
-        minerva_periodic_training();
-        _derive_keyblob_keys(keys);
-    }
+    _derive_master_keys(&prod_keys, &dev_keys, is_dev);
 
     TPRINTFARGS("%kMaster keys...  ", colors[(color_idx++) % 6]);
 
