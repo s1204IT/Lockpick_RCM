@@ -304,6 +304,11 @@ void dump_emunand()
 	dump_keys();
 }
 
+void dump_amiibo_keys()
+{
+	derive_amiibo_keys();
+}
+
 void dump_mariko_partial_keys();
 
 ment_t ment_partials[] = {
@@ -340,14 +345,15 @@ ment_t ment_top[] = {
 	MDEF_HANDLER("Dump from SysNAND", dump_sysnand, colors[0]),
 	MDEF_HANDLER("Dump from EmuNAND", dump_emunand, colors[1]),
 	MDEF_CAPTION("---------------", colors[2]),
-	MDEF_MENU("Dump Mariko Partials (requires reboot)", &menu_partials, colors[3]),
-	MDEF_CAPTION("---------------", colors[4]),
-	MDEF_HANDLER("Payloads...", launch_tools, colors[5]),
-	MDEF_HANDLER("Reboot to hekate", launch_hekate, colors[0]),
-	MDEF_CAPTION("---------------", colors[1]),
-	MDEF_HANDLER_EX("Reboot (OFW)", &STATE_REBOOT_BYPASS_FUSES, power_set_state_ex, colors[2]),
-	MDEF_HANDLER_EX("Reboot (RCM)", &STATE_REBOOT_RCM, power_set_state_ex, colors[3]),
-	MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex, colors[4]),
+	MDEF_HANDLER("Dump Amiibo Keys", dump_amiibo_keys, colors[3]),
+	MDEF_MENU("Dump Mariko Partials (requires reboot)", &menu_partials, colors[4]),
+	MDEF_CAPTION("---------------", colors[5]),
+	MDEF_HANDLER("Payloads...", launch_tools, colors[0]),
+	MDEF_HANDLER("Reboot to hekate", launch_hekate, colors[1]),
+	MDEF_CAPTION("---------------", colors[2]),
+	MDEF_HANDLER_EX("Reboot (OFW)", &STATE_REBOOT_BYPASS_FUSES, power_set_state_ex, colors[3]),
+	MDEF_HANDLER_EX("Reboot (RCM)", &STATE_REBOOT_RCM, power_set_state_ex, colors[4]),
+	MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex, colors[5]),
 	MDEF_END()
 };
 
@@ -369,7 +375,7 @@ void dump_mariko_partial_keys()
 			// Grey out dumping menu items as the keyslots have been invalidated.
 			grey_out_menu_item(&ment_top[0]);
 			grey_out_menu_item(&ment_top[1]);
-			grey_out_menu_item(&ment_top[3]);
+			grey_out_menu_item(&ment_top[4]);
 			grey_out_menu_item(&ment_partials[18]);
 		}
 
@@ -433,18 +439,18 @@ void ipl_main()
 	// Grey out reboot to RCM option if on Mariko or patched console.
 	if (h_cfg.t210b01 || h_cfg.rcm_patched)
 	{
-		grey_out_menu_item(&ment_top[9]);
+		grey_out_menu_item(&ment_top[10]);
 	}
 
 	// Grey out Mariko partial dump option on Erista.
 	if (!h_cfg.t210b01) {
-		grey_out_menu_item(&ment_top[3]);
+		grey_out_menu_item(&ment_top[4]);
 	}
 
 	// Grey out reboot to hekate option if no update.bin found.
 	if (f_stat("bootloader/update.bin", NULL))
 	{
-		grey_out_menu_item(&ment_top[6]);
+		grey_out_menu_item(&ment_top[7]);
 	}
 
 	minerva_change_freq(FREQ_800);

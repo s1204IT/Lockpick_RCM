@@ -74,6 +74,7 @@ static int  _key_exists(const void *data) { return memcmp(data, "\x00\x00\x00\x0
 static void _save_key(const char *name, const void *data, u32 len, char *outbuf);
 static void _save_key_family(const char *name, const void *data, u32 start_key, u32 num_keys, u32 len, char *outbuf);
 static void _generate_kek(u32 ks, const void *key_source, const void *master_key, const void *kek_seed, const void *key_seed);
+static void _decrypt_aes_key(u32 ks, void *dst, const void *key_source, const void *master_key);
 static void _generate_specific_aes_key(u32 ks, key_derivation_ctx_t *keys, void *out_key, const void *key_source, u32 key_generation);
 static void _get_device_key(u32 ks, key_derivation_ctx_t *keys, void *out_device_key, u32 revision);
 // titlekey functions
@@ -584,6 +585,11 @@ static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 // This allows for a manageable brute force on a PC
 // Then the Mariko AES class keys, KEK, BEK, unique SBK and SSK can be recovered
 int save_mariko_partial_keys(u32 start, u32 count, bool append) {
+    const char *keyfile_path = "sd:/switch/partialaes.keys";
+    if (!f_stat(keyfile_path, NULL)) {
+        f_unlink(keyfile_path);
+    }
+
     if (start + count > SE_AES_KEYSLOT_COUNT) {
         return 1;
     }
@@ -591,6 +597,8 @@ int save_mariko_partial_keys(u32 start, u32 count, bool append) {
     display_backlight_brightness(h_cfg.backlight, 1000);
     gfx_clear_partial_grey(0x1B, 32, 1224);
     gfx_con_setpos(0, 32);
+
+    color_idx = 0;
 
     u32 pos = 0;
     u32 zeros[AES_128_KEY_SIZE / 4] = {0};
@@ -655,7 +663,7 @@ int save_mariko_partial_keys(u32 start, u32 count, bool append) {
         return 3;
     }
 
-    if (f_open(&fp, "sd:/switch/partialaes.keys", mode)) {
+    if (f_open(&fp, keyfile_path, mode)) {
         EPRINTF("Unable to write partial keys to SD.");
         free(text_buffer);
         return 3;
@@ -664,7 +672,7 @@ int save_mariko_partial_keys(u32 start, u32 count, bool append) {
     f_write(&fp, text_buffer, strlen(text_buffer), NULL);
     f_close(&fp);
 
-    gfx_printf("%kWrote partials to sd:/switch/partialaes.keys\n", colors[(color_idx++) % 6]);
+    gfx_printf("%kWrote partials to %s\n", colors[(color_idx++) % 6], keyfile_path);
 
     free(text_buffer);
 
@@ -757,16 +765,15 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
     gfx_printf("%kFound through master_key_%02x.\n\n", colors[(color_idx++) % 6], KB_FIRMWARE_VERSION_MAX);
 
     f_mkdir("sd:/switch");
-    char keyfile_path[30] = "sd:/switch/prod.keys";
-    if (is_dev) {
-        s_printf(&keyfile_path[11], "dev.keys");
-    }
+
+    const char *keyfile_path = is_dev ? "sd:/switch/dev.keys" : "sd:/switch/prod.keys";
 
     FILINFO fno;
     if (!sd_save_to_file(text_buffer, strlen(text_buffer), keyfile_path) && !f_stat(keyfile_path, &fno)) {
         gfx_printf("%kWrote %d bytes to %s\n", colors[(color_idx++) % 6], (u32)fno.fsize, keyfile_path);
-    } else
+    } else {
         EPRINTF("Unable to save keys to SD.");
+    }
 
     if (_titlekey_count == 0 || !titlekey_buffer) {
         free(text_buffer);
@@ -784,11 +791,13 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
             s_printf(&titlekey_text[i].titlekey[j * 2], "%02x", titlekey_buffer->titlekeys[i][j]);
         s_printf(titlekey_text[i].newline, "\n");
     }
-    s_printf(&keyfile_path[11], "title.keys");
+
+    keyfile_path = "sd:/switch/title.keys";
     if (!sd_save_to_file(text_buffer, strlen(text_buffer), keyfile_path) && !f_stat(keyfile_path, &fno)) {
         gfx_printf("%kWrote %d bytes to %s\n", colors[(color_idx++) % 6], (u32)fno.fsize, keyfile_path);
-    } else
+    } else {
         EPRINTF("Unable to save titlekeys to SD.");
+    }
 
     free(text_buffer);
 }
@@ -831,10 +840,6 @@ static void _derive_master_keys(key_derivation_ctx_t *prod_keys, key_derivation_
 }
 
 static void _derive_keys() {
-    if (!f_stat("sd:/switch/partialaes.keys", NULL)) {
-        f_unlink("sd:/switch/partialaes.keys");
-    }
-
     minerva_periodic_training();
 
     if (!_check_keyslot_access()) {
@@ -875,10 +880,13 @@ static void _derive_keys() {
 
     minerva_periodic_training();
     _derive_non_unique_keys(&prod_keys, is_dev);
+
     minerva_periodic_training();
     _derive_non_unique_keys(&dev_keys, is_dev);
+
     minerva_periodic_training();
     _derive_per_generation_keys(&prod_keys);
+
     minerva_periodic_training();
     _derive_per_generation_keys(&dev_keys);
 
@@ -905,6 +913,89 @@ static void _derive_keys() {
         _key_count = 0;
         _save_keys_to_sd(&dev_keys, NULL, true);
     }
+}
+
+void derive_amiibo_keys() {
+    minerva_change_freq(FREQ_1600);
+
+    bool is_dev = fuse_read_hw_state() == FUSE_NX_HW_STATE_DEV;
+
+    key_derivation_ctx_t __attribute__((aligned(4))) prod_keys = {0}, dev_keys = {0};
+    key_derivation_ctx_t *keys = is_dev ? &dev_keys : &prod_keys;
+    const u8 *encrypted_keys = is_dev ? encrypted_nfc_keys_dev : encrypted_nfc_keys;
+
+    _derive_master_keys(&prod_keys, &dev_keys, is_dev);
+
+    minerva_periodic_training();
+
+    display_backlight_brightness(h_cfg.backlight, 1000);
+    gfx_clear_partial_grey(0x1B, 32, 1224);
+    gfx_con_setpos(0, 32);
+
+    color_idx = 0;
+
+    minerva_periodic_training();
+
+    if (!_key_exists(keys->master_key[0])) {
+        EPRINTF("Unable to derive master keys for NFC.");
+        minerva_change_freq(FREQ_800);
+        btn_wait();
+        return;
+    }
+
+    _decrypt_aes_key(8, keys->temp_key, nfc_key_source, keys->master_key[0]);
+
+    nfc_keyblob_t __attribute__((aligned(4))) nfc_keyblob;
+    static const u8 nfc_iv[AES_128_KEY_SIZE] = {
+        0xB9, 0x1D, 0xC1, 0xCF, 0x33, 0x5F, 0xA6, 0x13, 0x2A, 0xEF, 0x90, 0x99, 0xAA, 0xCA, 0x93, 0xC8};
+    se_aes_key_set(6, keys->temp_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(6, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
+
+    minerva_periodic_training();
+
+    u8 xor_pad[0x20] __attribute__((aligned(4))) = {0};
+    se_aes_key_set(6, nfc_keyblob.ctr_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(6, xor_pad, sizeof(xor_pad), xor_pad, sizeof(xor_pad), nfc_keyblob.ctr_iv);
+
+    minerva_periodic_training();
+
+    nfc_save_key_t __attribute__((aligned(4))) nfc_save_keys[2] = {0};
+    memcpy(nfc_save_keys[0].hmac_key, nfc_keyblob.hmac_key, sizeof(nfc_keyblob.hmac_key));
+    memcpy(nfc_save_keys[0].phrase, nfc_keyblob.phrase, sizeof(nfc_keyblob.phrase));
+    nfc_save_keys[0].seed_size = sizeof(nfc_keyblob.seed);
+    memcpy(nfc_save_keys[0].seed, nfc_keyblob.seed, sizeof(nfc_keyblob.seed));
+    memcpy(nfc_save_keys[0].xor_pad, xor_pad, sizeof(xor_pad));
+
+    memcpy(nfc_save_keys[1].hmac_key, nfc_keyblob.hmac_key_for_verif, sizeof(nfc_keyblob.hmac_key_for_verif));
+    memcpy(nfc_save_keys[1].phrase, nfc_keyblob.phrase_for_verif, sizeof(nfc_keyblob.phrase_for_verif));
+    nfc_save_keys[1].seed_size = sizeof(nfc_keyblob.seed_for_verif);
+    memcpy(nfc_save_keys[1].seed, nfc_keyblob.seed_for_verif, sizeof(nfc_keyblob.seed_for_verif));
+    memcpy(nfc_save_keys[1].xor_pad, xor_pad, sizeof(xor_pad));
+
+    minerva_periodic_training();
+
+    u8 hash[0x20] = {0};
+    se_calc_sha256_oneshot(hash, &nfc_save_keys[0], sizeof(nfc_save_keys));
+
+    if (memcmp(hash, is_dev ? nfc_blob_hash_dev : nfc_blob_hash, sizeof(hash)) != 0) {
+        EPRINTF("Amiibo hash mismatch. Skipping save.");
+        minerva_change_freq(FREQ_800);
+        btn_wait();
+        return;
+    }
+
+    const char *keyfile_path = is_dev ? "sd:/switch/key_dev.bin" : "sd:/switch/key_retail.bin";
+
+    if (!sd_save_to_file(&nfc_save_keys[0], sizeof(nfc_save_keys), keyfile_path)) {
+        gfx_printf("%kWrote Amiibo keys to\n %s\n", colors[(color_idx++) % 6], keyfile_path);
+    } else {
+        EPRINTF("Unable to save Amiibo keys to SD.");
+    }
+
+    gfx_printf("\n%kPress a button to return to the menu.", colors[(color_idx++) % 6]);
+    minerva_change_freq(FREQ_800);
+    btn_wait();
+    gfx_clear_grey(0x1B);
 }
 
 void dump_keys() {
@@ -969,6 +1060,8 @@ static void _save_key_family(const char *name, const void *data, u32 start_key, 
     free(temp_name);
 }
 
+// Equivalent to spl::GenerateAesKek. When key_seed is set, the result is as if spl::GenerateAesKey was called immediately after.
+// The generation and option args are dictated by master_key and kek_seed.
 static void _generate_kek(u32 ks, const void *key_source, const void *master_key, const void *kek_seed, const void *key_seed) {
     if (!_key_exists(key_source) || !_key_exists(master_key) || !_key_exists(kek_seed))
         return;
@@ -978,6 +1071,12 @@ static void _generate_kek(u32 ks, const void *key_source, const void *master_key
     se_aes_unwrap_key(ks, ks, key_source);
     if (key_seed && _key_exists(key_seed))
         se_aes_unwrap_key(ks, ks, key_seed);
+}
+
+// Equivalent to spl::DecryptAesKey.
+static void _decrypt_aes_key(u32 ks, void *dst, const void *key_source, const void *master_key) {
+    _generate_kek(ks, aes_key_decryption_source, master_key, aes_kek_generation_source, aes_key_generation_source);
+    se_aes_crypt_block_ecb(ks, 0, dst, key_source);
 }
 
 static void _get_secure_data(key_derivation_ctx_t *keys, void *dst) {

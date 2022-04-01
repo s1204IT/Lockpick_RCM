@@ -84,6 +84,27 @@ typedef struct {
 } encrypted_keyblob_t;
 
 typedef struct {
+    char phrase[0xE];
+    u8 seed[0xE];
+    u8 hmac_key[0x10];
+    char phrase_for_verif[0xE];
+    u8 seed_for_verif[0x10];
+    u8 hmac_key_for_verif[0x10];
+    u8 ctr_key[0x10];
+    u8 ctr_iv[0x10];
+    u8 pad[6];
+} nfc_keyblob_t;
+
+typedef struct {
+    u8 hmac_key[0x10];
+    char phrase[0xE];
+    u8 rsvd;
+    u8 seed_size;
+    u8 seed[0x10];
+    u8 xor_pad[0x20];
+} nfc_save_key_t;
+
+typedef struct {
     u8  temp_key[AES_128_KEY_SIZE],
         bis_key[4][AES_128_KEY_SIZE * 2],
         device_key[AES_128_KEY_SIZE],
@@ -142,5 +163,6 @@ typedef struct {
 
 void dump_keys();
 int save_mariko_partial_keys(u32 start, u32 count, bool append);
+void derive_amiibo_keys();
 
 #endif
