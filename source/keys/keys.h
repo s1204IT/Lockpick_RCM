@@ -131,6 +131,7 @@ typedef struct {
         tsec_root_key[AES_128_KEY_SIZE];
     u32 sbk[4];
     keyblob_t keyblob[KB_FIRMWARE_VERSION_600 + 1];
+    rsa_keypair_t rsa_keypair;
 } key_derivation_ctx_t;
 
 typedef struct {

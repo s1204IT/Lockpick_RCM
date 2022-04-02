@@ -453,8 +453,6 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     gfx_printf("%kTitlekeys...     \n", colors[(color_idx++) % 6]);
 
-    rsa_keypair_t rsa_keypair = {0};
-
     if (!emummc_storage_read(NX_EMMC_CALIBRATION_OFFSET / NX_EMMC_BLOCKSIZE, NX_EMMC_CALIBRATION_SIZE / NX_EMMC_BLOCKSIZE, titlekey_buffer->read_buffer)) {
         EPRINTF("Unable to read PRODINFO.");
         return false;
@@ -496,34 +494,36 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     }
 
     se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
-    se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), eticket_device_key, sizeof(rsa_keypair), eticket_iv);
+    se_aes_crypt_ctr(6, &keys->rsa_keypair, sizeof(keys->rsa_keypair), eticket_device_key, sizeof(keys->rsa_keypair), eticket_iv);
 
     // Check public exponent is 65537 big endian
-    if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {
+    if (_read_be_u32(keys->rsa_keypair.public_exponent, 0) != 65537) {
         // try legacy kek source
         _derive_eticket_rsa_kek(keys, 7, keys->temp_key, keys->master_key[0], eticket_rsa_kek_source_legacy);
 
         se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
-        se_aes_crypt_ctr(6, &rsa_keypair, sizeof(rsa_keypair), eticket_device_key, sizeof(rsa_keypair), eticket_iv);
+        se_aes_crypt_ctr(6, &keys->rsa_keypair, sizeof(keys->rsa_keypair), eticket_device_key, sizeof(keys->rsa_keypair), eticket_iv);
 
-        if (_read_be_u32(rsa_keypair.public_exponent, 0) != 65537) {
+        if (_read_be_u32(keys->rsa_keypair.public_exponent, 0) != 65537) {
             EPRINTF("Invalid public exponent.");
+            memset(&keys->rsa_keypair, 0, sizeof(keys->rsa_keypair));
             return false;
         } else {
             memcpy(keys->eticket_rsa_kek, keys->temp_key, sizeof(keys->eticket_rsa_kek));
         }
     }
 
-    if (!_test_key_pair(rsa_keypair.public_exponent, rsa_keypair.private_exponent, rsa_keypair.modulus)) {
+    if (!_test_key_pair(keys->rsa_keypair.public_exponent, keys->rsa_keypair.private_exponent, keys->rsa_keypair.modulus)) {
         EPRINTF("Invalid keypair. Check eticket_rsa_kek.");
+        memset(&keys->rsa_keypair, 0, sizeof(keys->rsa_keypair));
         return false;
     }
 
-    se_rsa_key_set(0, rsa_keypair.modulus, sizeof(rsa_keypair.modulus), rsa_keypair.private_exponent, sizeof(rsa_keypair.private_exponent));
+    se_rsa_key_set(0, keys->rsa_keypair.modulus, sizeof(keys->rsa_keypair.modulus), keys->rsa_keypair.private_exponent, sizeof(keys->rsa_keypair.private_exponent));
 
     const u32 buf_size = SZ_16K;
     _get_titlekeys_from_save(buf_size, keys->save_mac_key, titlekey_buffer, NULL);
-    _get_titlekeys_from_save(buf_size, keys->save_mac_key, titlekey_buffer, &rsa_keypair);
+    _get_titlekeys_from_save(buf_size, keys->save_mac_key, titlekey_buffer, &keys->rsa_keypair);
 
     gfx_printf("\n%k  Found %d titlekeys.\n\n", colors[(color_idx++) % 6], _titlekey_count);
 
@@ -704,6 +704,7 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
         SAVE_KEY(eticket_rsa_kek_source);
     }
     SAVE_KEY(eticket_rsa_kekek_source);
+    _save_key("eticket_rsa_keypair", &keys->rsa_keypair, sizeof(keys->rsa_keypair), text_buffer);
     SAVE_KEY(header_kek_source);
     SAVE_KEY_VAR(header_key, keys->header_key);
     SAVE_KEY(header_key_source);
