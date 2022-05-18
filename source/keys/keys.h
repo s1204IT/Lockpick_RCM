@@ -117,6 +117,8 @@ typedef struct {
         eticket_rsa_kek[AES_128_KEY_SIZE],
         eticket_rsa_kek_personalized[AES_128_KEY_SIZE],
         ssl_rsa_kek[AES_128_KEY_SIZE],
+        ssl_rsa_kek_personalized[AES_128_KEY_SIZE],
+        ssl_rsa_key[RSA_2048_KEY_SIZE + 0x20],
         // keyblob-derived families
         keyblob_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
         keyblob_mac_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],

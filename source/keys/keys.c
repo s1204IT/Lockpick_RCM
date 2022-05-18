@@ -235,6 +235,14 @@ static void _derive_eticket_rsa_kek(key_derivation_ctx_t *keys, u32 ks, void *ou
     se_aes_crypt_block_ecb(ks, DECRYPT, out_rsa_kek, kek_source);
 }
 
+static void _derive_ssl_rsa_kek(key_derivation_ctx_t *keys, u32 ks, void *out_rsa_kek, const void *master_key, const void *kekek_source, const void *kek_source) {
+    u8 kek_seed[AES_128_KEY_SIZE];
+    for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
+        kek_seed[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_decrypt_device_unique_data[i];
+    _generate_kek(8, kekek_source, master_key, kek_seed, NULL);
+    se_aes_crypt_block_ecb(8, DECRYPT, out_rsa_kek, kek_source);
+}
+
 static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
     if (_key_exists(keys->device_key) || (_key_exists(keys->master_key[0]) && _key_exists(keys->device_key_4x))) {
         _get_device_key(8, keys, keys->temp_key, 0);
@@ -244,11 +252,7 @@ static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
 
     if (_key_exists(keys->master_key[0])) {
         _derive_eticket_rsa_kek(keys, 8, keys->eticket_rsa_kek, keys->master_key[0], is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source);
-
-        for (u32 i = 0; i < AES_128_KEY_SIZE; i++)
-            keys->temp_key[i] = aes_kek_generation_source[i] ^ aes_seal_key_mask_decrypt_device_unique_data[i];
-        _generate_kek(8, ssl_rsa_kek_source_x, keys->master_key[0], keys->temp_key, NULL);
-        se_aes_crypt_block_ecb(8, DECRYPT, keys->ssl_rsa_kek, ssl_rsa_kek_source_y);
+        _derive_ssl_rsa_kek(keys, 8, keys->ssl_rsa_kek, keys->master_key[0], ssl_rsa_kek_source_x, is_dev ? ssl_rsa_kek_source_y_dev : ssl_rsa_kek_source_y);
     }
 }
 
@@ -446,6 +450,74 @@ static bool _derive_sd_seed(key_derivation_ctx_t *keys) {
     return true;
 }
 
+static bool _read_cal0(void *read_buffer) {
+    if (!emummc_storage_read(NX_EMMC_CALIBRATION_OFFSET / NX_EMMC_BLOCKSIZE, NX_EMMC_CALIBRATION_SIZE / NX_EMMC_BLOCKSIZE, read_buffer)) {
+        EPRINTF("Unable to read PRODINFO.");
+        return false;
+    }
+
+    se_aes_xts_crypt(1, 0, DECRYPT, 0, read_buffer, read_buffer, XTS_CLUSTER_SIZE, NX_EMMC_CALIBRATION_SIZE / XTS_CLUSTER_SIZE);
+
+    nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)read_buffer;
+    if (cal0->magic != MAGIC_CAL0) {
+        EPRINTF("Invalid CAL0 magic. Check BIS key 0.");
+        return false;
+    }
+
+    return true;
+}
+
+static bool _derive_personalized_ssl_key(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer) {
+    if (!_read_cal0(titlekey_buffer->read_buffer)) {
+        return false;
+    }
+
+    nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
+    u32 keypair_generation = 0;
+    const void *ssl_device_key = NULL;
+    const void *ssl_iv = NULL;
+    u32 key_size = 0;
+
+    if (cal0->ext_ssl_key_crc == crc16_calc(cal0->ext_ssl_key_iv, 0x13E)) {
+        ssl_device_key = cal0->ext_ssl_key;
+        ssl_iv = cal0->ext_ssl_key_iv;
+        key_size = 0x120;
+
+        // settings sysmodule manually zeroes this out below cal version 9
+        keypair_generation = cal0->version <= 8 ? 0 : cal0->ext_ssl_key_ver;
+    } else if (cal0->ssl_key_crc == crc16_calc(cal0->ssl_key_iv, 0x11E)) {
+        ssl_device_key = cal0->ssl_key;
+        ssl_iv = cal0->ssl_key_iv;
+        key_size = 0x100;
+    } else {
+        EPRINTF("Crc16 error reading device key.");
+        return false;
+    }
+
+    if (keypair_generation) {
+        keypair_generation--;
+        _get_device_key(7, keys, keys->temp_key, keypair_generation);
+        _derive_ssl_rsa_kek(keys, 7, keys->ssl_rsa_kek_personalized, keys->temp_key, ssl_client_cert_kek_source, ssl_client_cert_key_source);
+
+        memcpy(keys->temp_key, keys->ssl_rsa_kek_personalized, sizeof(keys->temp_key));
+    } else {
+        memcpy(keys->temp_key, keys->ssl_rsa_kek, sizeof(keys->temp_key));
+    }
+
+    se_aes_key_set(6, keys->temp_key, sizeof(keys->temp_key));
+    se_aes_crypt_ctr(6, &keys->ssl_rsa_key, sizeof(keys->ssl_rsa_key), ssl_device_key, sizeof(keys->ssl_rsa_key), ssl_iv);
+
+    if (key_size == 0x120) {
+        if (_key_exists(keys->ssl_rsa_key + 0x100)) {
+            EPRINTF("Invalid SSL key.");
+            memset(&keys->ssl_rsa_key, 0, sizeof(keys->ssl_rsa_key));
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
     if (!_key_exists(keys->eticket_rsa_kek)) {
         return false;
@@ -453,19 +525,11 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 
     gfx_printf("%kTitlekeys...     \n", colors[(color_idx++) % 6]);
 
-    if (!emummc_storage_read(NX_EMMC_CALIBRATION_OFFSET / NX_EMMC_BLOCKSIZE, NX_EMMC_CALIBRATION_SIZE / NX_EMMC_BLOCKSIZE, titlekey_buffer->read_buffer)) {
-        EPRINTF("Unable to read PRODINFO.");
+    if (!_read_cal0(titlekey_buffer->read_buffer)) {
         return false;
     }
-
-    se_aes_xts_crypt(1, 0, DECRYPT, 0, titlekey_buffer->read_buffer, titlekey_buffer->read_buffer, XTS_CLUSTER_SIZE, NX_EMMC_CALIBRATION_SIZE / XTS_CLUSTER_SIZE);
 
     nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
-    if (cal0->magic != MAGIC_CAL0) {
-        EPRINTF("Invalid CAL0 magic. Check BIS key 0.");
-        return false;
-    }
-
     u32 keypair_generation = 0;
     const void *eticket_device_key = NULL;
     const void *eticket_iv = NULL;
@@ -575,6 +639,9 @@ static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     if (!res) {
         EPRINTF("Unable to derive titlekeys.");
     }
+
+    _derive_personalized_ssl_key(keys, titlekey_buffer);
+
     f_mount(NULL, "bis:", 1);
     nx_emmc_gpt_free(&gpt);
 
@@ -751,8 +818,10 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
     SAVE_KEY_VAR(sd_seed, keys->sd_seed);
     SAVE_KEY_VAR(secure_boot_key, keys->sbk);
     SAVE_KEY_VAR(ssl_rsa_kek, keys->ssl_rsa_kek);
+    SAVE_KEY_VAR(ssl_rsa_kek_personalized, keys->ssl_rsa_kek_personalized);
     SAVE_KEY(ssl_rsa_kek_source_x);
     SAVE_KEY(ssl_rsa_kek_source_y);
+    _save_key("ssl_rsa_key", keys->ssl_rsa_key, RSA_2048_KEY_SIZE, text_buffer);
     SAVE_KEY_FAMILY_VAR(titlekek, keys->titlekek, 0);
     SAVE_KEY(titlekek_source);
     SAVE_KEY_VAR(tsec_key, keys->tsec_key);
