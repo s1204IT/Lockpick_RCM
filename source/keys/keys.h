@@ -26,6 +26,29 @@
 
 #define RSA_PUBLIC_EXPONENT 65537
 
+// Lockpick_RCM keyslots
+#define KS_BIS_00_0 0
+#define KS_BIS_00_1 1
+#define KS_BIS_01_0 2
+#define KS_BIS_01_1 3
+#define KS_BIS_02_0 4
+#define KS_BIS_02_1 5
+#define KS_AES_CTR  6
+#define KS_AES_ECB  8
+#define KS_AES_CMAC 10
+
+// Mariko keyslots
+#define KS_MARIKO_KEK 12
+#define KS_MARIKO_BEK 13
+
+// Other Switch keyslots
+#define KS_TSEC        12
+#define KS_SECURE_BOOT 14
+
+// Atmosphere keygen keyslots
+#define KS_TSEC_ROOT_DEV 11
+#define KS_TSEC_ROOT     13
+
 // only tickets of type Rsa2048Sha256 are expected
 typedef struct {
     u32 signature_type;   // always 0x10004
@@ -125,9 +148,7 @@ typedef enum {
 #define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
 #define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
 
-#define WRAPPED_RSA_EXT_DATA_SIZE 0x20
-#define SSL_RSA_KEYPAIR_SIZE (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
-#define SSL_RSA_EXT_KEYPAIR_SIZE (SSL_RSA_KEYPAIR_SIZE + WRAPPED_RSA_EXT_DATA_SIZE)
+#define SSL_RSA_KEY_SIZE (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
 
 typedef struct {
     u8  temp_key[AES_128_KEY_SIZE],
@@ -144,7 +165,7 @@ typedef struct {
         ssl_rsa_kek[AES_128_KEY_SIZE],
         ssl_rsa_kek_legacy[AES_128_KEY_SIZE],
         ssl_rsa_kek_personalized[AES_128_KEY_SIZE],
-        ssl_rsa_keypair[RSA_2048_KEY_SIZE + 0x20],
+        ssl_rsa_key[RSA_2048_KEY_SIZE + 0x20],
         // keyblob-derived families
         keyblob_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
         keyblob_mac_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],

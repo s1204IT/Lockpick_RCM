@@ -82,16 +82,16 @@ static void _generate_specific_aes_key(u32 ks, key_derivation_ctx_t *keys, void 
 static void _get_device_key(u32 ks, key_derivation_ctx_t *keys, void *out_device_key, u32 generation);
 static void _ghash(u32 ks, void *dst, const void *src, u32 src_size, const void *j_block, bool encrypt);
 // titlekey functions
-static bool _test_key_pair(const void *E, const void *D, const void *N);
+static bool _test_rsa_keypair(const void *E, const void *D, const void *N);
 
 static void _derive_master_key_mariko(key_derivation_ctx_t *keys, bool is_dev) {
     // Relies on the SBK being properly set in slot 14
-    se_aes_crypt_block_ecb(14, DECRYPT, keys->device_key_4x, device_master_key_source_kek_source);
+    se_aes_crypt_block_ecb(KS_SECURE_BOOT, DECRYPT, keys->device_key_4x, device_master_key_source_kek_source);
     // Derive all master keys based on Mariko KEK
     for (u32 i = KB_FIRMWARE_VERSION_600; i < ARRAY_SIZE(mariko_master_kek_sources) + KB_FIRMWARE_VERSION_600; i++) {
         // Relies on the Mariko KEK being properly set in slot 12
-        se_aes_crypt_block_ecb(12, DECRYPT, keys->master_kek[i], is_dev ? &mariko_master_kek_sources_dev[i - KB_FIRMWARE_VERSION_600] : &mariko_master_kek_sources[i - KB_FIRMWARE_VERSION_600]); // mkek = unwrap(mariko_kek, mariko_kek_source)
-        _load_aes_key(8, keys->master_key[i], keys->master_kek[i], master_key_source);
+        se_aes_crypt_block_ecb(KS_MARIKO_KEK, DECRYPT, keys->master_kek[i], is_dev ? &mariko_master_kek_sources_dev[i - KB_FIRMWARE_VERSION_600] : &mariko_master_kek_sources[i - KB_FIRMWARE_VERSION_600]);
+        _load_aes_key(KS_AES_ECB, keys->master_key[i], keys->master_kek[i], master_key_source);
     }
 }
 
@@ -118,16 +118,16 @@ static void _derive_master_keys_from_latest_key(key_derivation_ctx_t *keys, bool
         u32 tsec_root_key_slot = is_dev ? 11 : 13;
         // Derive all master keys based on current root key
         for (u32 i = KB_FIRMWARE_VERSION_810 - KB_FIRMWARE_VERSION_620; i < ARRAY_SIZE(master_kek_sources); i++) {
-            se_aes_crypt_block_ecb(tsec_root_key_slot, DECRYPT, keys->master_kek[i + KB_FIRMWARE_VERSION_620], master_kek_sources[i]); // mkek = unwrap(tsec_root, mkeks)
-            _load_aes_key(8, keys->master_key[i + KB_FIRMWARE_VERSION_620], keys->master_kek[i + KB_FIRMWARE_VERSION_620], master_key_source);
+            se_aes_crypt_block_ecb(tsec_root_key_slot, DECRYPT, keys->master_kek[i + KB_FIRMWARE_VERSION_620], master_kek_sources[i]);
+            _load_aes_key(KS_AES_ECB, keys->master_key[i + KB_FIRMWARE_VERSION_620], keys->master_kek[i + KB_FIRMWARE_VERSION_620], master_key_source);
         }
     }
 
     // Derive all lower master keys
     for (u32 i = KB_FIRMWARE_VERSION_MAX; i > 0; i--) {
-        _load_aes_key(8, keys->master_key[i - 1], keys->master_key[i], is_dev ? master_key_vectors_dev[i] : master_key_vectors[i]);
+        _load_aes_key(KS_AES_ECB, keys->master_key[i - 1], keys->master_key[i], is_dev ? master_key_vectors_dev[i] : master_key_vectors[i]);
     }
-    _load_aes_key(8, keys->temp_key, keys->master_key[0], is_dev ? master_key_vectors_dev[0] : master_key_vectors[0]);
+    _load_aes_key(KS_AES_ECB, keys->temp_key, keys->master_key[0], is_dev ? master_key_vectors_dev[0] : master_key_vectors[0]);
 
     if (_key_exists(keys->temp_key)) {
         EPRINTFARGS("Unable to derive master keys for %s.", is_dev ? "dev" : "prod");
@@ -164,34 +164,34 @@ static void _derive_keyblob_keys(key_derivation_ctx_t *keys) {
     encrypted_keyblob_t *current_keyblob = (encrypted_keyblob_t *)keyblob_block;
     for (u32 i = 0; i <= KB_FIRMWARE_VERSION_600; i++, current_keyblob++) {
         minerva_periodic_training();
-        se_aes_crypt_block_ecb(12, DECRYPT, keys->keyblob_key[i], keyblob_key_sources[i]); // temp = unwrap(kbks, tsec)
-        se_aes_crypt_block_ecb(14, DECRYPT, keys->keyblob_key[i], keys->keyblob_key[i]); // kbk = unwrap(temp, sbk)
-        _load_aes_key(7, keys->keyblob_mac_key[i], keys->keyblob_key[i], keyblob_mac_key_source); // kbm = unwrap(kbms, kbk)
+        se_aes_crypt_block_ecb(KS_TSEC, DECRYPT, keys->keyblob_key[i], keyblob_key_sources[i]);
+        se_aes_crypt_block_ecb(KS_SECURE_BOOT, DECRYPT, keys->keyblob_key[i], keys->keyblob_key[i]);
+        _load_aes_key(KS_AES_ECB, keys->keyblob_mac_key[i], keys->keyblob_key[i], keyblob_mac_key_source);
         if (i == 0) {
-            se_aes_crypt_block_ecb(7, DECRYPT, keys->device_key, per_console_key_source); // devkey = unwrap(pcks, kbk0)
-            se_aes_crypt_block_ecb(7, DECRYPT, keys->device_key_4x, device_master_key_source_kek_source);
+            se_aes_crypt_block_ecb(KS_AES_ECB, DECRYPT, keys->device_key, per_console_key_source);
+            se_aes_crypt_block_ecb(KS_AES_ECB, DECRYPT, keys->device_key_4x, device_master_key_source_kek_source);
         }
 
         if (!have_keyblobs) {
             continue;
         }
 
-        // verify keyblob is not corrupt
-        se_aes_key_set(10, keys->keyblob_mac_key[i], sizeof(keys->keyblob_mac_key[i]));
-        se_aes_cmac(10, keyblob_mac, sizeof(keyblob_mac), current_keyblob->iv, sizeof(current_keyblob->iv) + sizeof(keyblob_t));
+        // Verify keyblob is not corrupt
+        se_aes_key_set(KS_AES_CMAC, keys->keyblob_mac_key[i], sizeof(keys->keyblob_mac_key[i]));
+        se_aes_cmac(KS_AES_CMAC, keyblob_mac, sizeof(keyblob_mac), current_keyblob->iv, sizeof(current_keyblob->iv) + sizeof(keyblob_t));
         if (memcmp(current_keyblob->cmac, keyblob_mac, sizeof(keyblob_mac)) != 0) {
             EPRINTFARGS("Keyblob %x corrupt.", i);
             continue;
         }
 
-        // decrypt keyblobs
-        se_aes_key_set(6, keys->keyblob_key[i], sizeof(keys->keyblob_key[i]));
-        se_aes_crypt_ctr(6, &keys->keyblob[i], sizeof(keyblob_t), &current_keyblob->key_data, sizeof(keyblob_t), current_keyblob->iv);
+        // Decrypt keyblobs
+        se_aes_key_set(KS_AES_CTR, keys->keyblob_key[i], sizeof(keys->keyblob_key[i]));
+        se_aes_crypt_ctr(KS_AES_CTR, &keys->keyblob[i], sizeof(keyblob_t), &current_keyblob->key_data, sizeof(keyblob_t), current_keyblob->iv);
 
         memcpy(keys->package1_key[i], keys->keyblob[i].package1_key, sizeof(keys->package1_key[i]));
         memcpy(keys->master_kek[i], keys->keyblob[i].master_kek, sizeof(keys->master_kek[i]));
         if (!_key_exists(keys->master_key[i])) {
-            _load_aes_key(7, keys->master_key[i], keys->master_kek[i], master_key_source);
+            _load_aes_key(KS_AES_ECB, keys->master_key[i], keys->master_kek[i], master_key_source);
         }
     }
     free(keyblob_block);
@@ -204,12 +204,12 @@ static void _derive_bis_keys(key_derivation_ctx_t *keys) {
     if (!(_key_exists(keys->device_key) || (generation && _key_exists(keys->master_key[0]) && _key_exists(keys->device_key_4x)))) {
         return;
     }
-    _generate_specific_aes_key(8, keys, &keys->bis_key[0], bis_key_sources[0], generation);
+    _generate_specific_aes_key(KS_AES_ECB, keys, &keys->bis_key[0], bis_key_sources[0], generation);
     u32 access_key[AES_128_KEY_SIZE / 4] = {0};
     const u32 option = GET_IS_DEVICE_UNIQUE(IS_DEVICE_UNIQUE);
-    _generate_aes_kek(8, keys, access_key, bis_kek_source, generation, option);
-    _generate_aes_key(8, keys, keys->bis_key[1], sizeof(keys->bis_key[1]), access_key, bis_key_sources[1]);
-    _generate_aes_key(8, keys, keys->bis_key[2], sizeof(keys->bis_key[2]), access_key, bis_key_sources[2]);
+    _generate_aes_kek(KS_AES_ECB, keys, access_key, bis_kek_source, generation, option);
+    _generate_aes_key(KS_AES_ECB, keys, keys->bis_key[1], sizeof(keys->bis_key[1]), access_key, bis_key_sources[1]);
+    _generate_aes_key(KS_AES_ECB, keys, keys->bis_key[2], sizeof(keys->bis_key[2]), access_key, bis_key_sources[2]);
     memcpy(keys->bis_key[3], keys->bis_key[2], sizeof(keys->bis_key[3]));
 }
 
@@ -217,19 +217,19 @@ static void _derive_non_unique_keys(key_derivation_ctx_t *keys, bool is_dev) {
     if (_key_exists(keys->master_key[0])) {
         const u32 generation = 0;
         const u32 option = GET_IS_DEVICE_UNIQUE(NOT_DEVICE_UNIQUE);
-        _generate_aes_kek(8, keys, keys->temp_key, header_kek_source, generation, option);
-        _generate_aes_key(8, keys, keys->header_key, sizeof(keys->header_key), keys->temp_key, header_key_source);
+        _generate_aes_kek(KS_AES_ECB, keys, keys->temp_key, header_kek_source, generation, option);
+        _generate_aes_key(KS_AES_ECB, keys, keys->header_key, sizeof(keys->header_key), keys->temp_key, header_key_source);
     }
 }
 
-static void _derive_eticket_rsa_kek(key_derivation_ctx_t *keys, u32 ks, void *out_rsa_kek, const void *kek_source, u32 generation, u32 option) {
+static void _derive_eticket_rsa_kek(u32 ks, key_derivation_ctx_t *keys, void *out_rsa_kek, const void *kek_source, u32 generation, u32 option) {
     void *access_key = keys->temp_key;
     _generate_aes_kek(ks, keys, access_key, eticket_rsa_kekek_source, generation, option);
     _get_device_unique_data_key(ks, out_rsa_kek, access_key, kek_source);
     
 }
 
-static void _derive_ssl_rsa_kek(key_derivation_ctx_t *keys, u32 ks, void *out_rsa_kek, const void *kekek_source, const void *kek_source, u32 generation, u32 option) {
+static void _derive_ssl_rsa_kek(u32 ks, key_derivation_ctx_t *keys, void *out_rsa_kek, const void *kekek_source, const void *kek_source, u32 generation, u32 option) {
     void *access_key = keys->temp_key;
     _generate_aes_kek(ks, keys, access_key, kekek_source, generation, option);
     _get_device_unique_data_key(ks, out_rsa_kek, access_key, kek_source);
@@ -240,19 +240,19 @@ static void _derive_misc_keys(key_derivation_ctx_t *keys, bool is_dev) {
         void *access_key = keys->temp_key;
         const u32 generation = 0;
         const u32 option = GET_IS_DEVICE_UNIQUE(IS_DEVICE_UNIQUE);
-        _generate_aes_kek(8, keys, access_key, save_mac_kek_source, generation, option);
-        _load_aes_key(8, keys->save_mac_key, access_key, save_mac_key_source);
+        _generate_aes_kek(KS_AES_ECB, keys, access_key, save_mac_kek_source, generation, option);
+        _load_aes_key(KS_AES_ECB, keys->save_mac_key, access_key, save_mac_key_source);
     }
 
     if (_key_exists(keys->master_key[0])) {
         const void *eticket_kek_source = is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source;
         const u32 generation = 0;
         u32 option = SET_SEAL_KEY_INDEX(SEAL_KEY_IMPORT_ES_DEVICE_KEY);
-        _derive_eticket_rsa_kek(keys, 8, keys->eticket_rsa_kek, eticket_kek_source, generation, option);
+        _derive_eticket_rsa_kek(KS_AES_ECB, keys, keys->eticket_rsa_kek, eticket_kek_source, generation, option);
 
         const void *ssl_kek_source = is_dev ? ssl_rsa_kek_source_dev : ssl_rsa_kek_source;
         option = SET_SEAL_KEY_INDEX(SEAL_KEY_DECRYPT_DEVICE_UNIQUE_DATA);
-        _derive_ssl_rsa_kek(keys, 8, keys->ssl_rsa_kek, ssl_rsa_kekek_source, ssl_kek_source, generation, option);
+        _derive_ssl_rsa_kek(KS_AES_ECB, keys, keys->ssl_rsa_kek, ssl_rsa_kekek_source, ssl_kek_source, generation, option);
     }
 }
 
@@ -263,11 +263,11 @@ static void _derive_per_generation_keys(key_derivation_ctx_t *keys) {
         for (u32 source_type = 0; source_type < ARRAY_SIZE(key_area_key_sources); source_type++) {
             void *access_key = keys->temp_key;
             const u32 option = GET_IS_DEVICE_UNIQUE(NOT_DEVICE_UNIQUE);
-            _generate_aes_kek(8, keys, access_key, key_area_key_sources[source_type], generation + 1, option);
-            _load_aes_key(8, keys->key_area_key[source_type][generation], access_key, aes_key_generation_source);
+            _generate_aes_kek(KS_AES_ECB, keys, access_key, key_area_key_sources[source_type], generation + 1, option);
+            _load_aes_key(KS_AES_ECB, keys->key_area_key[source_type][generation], access_key, aes_key_generation_source);
         }
-        _load_aes_key(8, keys->package2_key[generation], keys->master_key[generation], package2_key_source);
-        _load_aes_key(8, keys->titlekek[generation], keys->master_key[generation], titlekek_source);
+        _load_aes_key(KS_AES_ECB, keys->package2_key[generation], keys->master_key[generation], package2_key_source);
+        _load_aes_key(KS_AES_ECB, keys->titlekek[generation], keys->master_key[generation], titlekek_source);
     }
 }
 
@@ -425,7 +425,7 @@ static bool _derive_sd_seed(key_derivation_ctx_t *keys) {
         EPRINTF("Unable to open SD seed vector. Skipping.");
         return false;
     }
-    // get sd seed verification vector
+    // Get sd seed verification vector
     if (f_read(&fp, keys->temp_key, AES_128_KEY_SIZE, &read_bytes) || read_bytes != AES_128_KEY_SIZE) {
         EPRINTF("Unable to read SD seed vector. Skipping.");
         f_close(&fp);
@@ -433,7 +433,7 @@ static bool _derive_sd_seed(key_derivation_ctx_t *keys) {
     }
     f_close(&fp);
 
-    // this file is small enough that parsing the savedata properly is slower
+    // This file is small enough that parsing the savedata properly is slower
     if (f_open(&fp, "bis:/save/8000000000000043", FA_READ | FA_OPEN_EXISTING)) {
         EPRINTF("Unable to open ns_appman save.\nSkipping SD seed.");
         return false;
@@ -482,7 +482,7 @@ static bool _get_rsa_ssl_key(const nx_emmc_cal0_t *cal0, const void **out_key, u
         *out_key = cal0->ext_ssl_key;
         *out_key_size = ext_key_size;
         *out_iv = cal0->ext_ssl_key_iv;
-        // settings sysmodule manually zeroes this out below cal version 9
+        // Settings sysmodule manually zeroes this out below cal version 9
         *out_generation = cal0->version <= 8 ? 0 : cal0->ext_ssl_key_ver;
     } else if (cal0->ssl_key_crc == crc16_calc(cal0->ssl_key_iv, key_crc_size)) {
         *out_key = cal0->ssl_key;
@@ -501,63 +501,63 @@ static bool _derive_personalized_ssl_key(key_derivation_ctx_t *keys, titlekey_bu
     }
 
     nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
-    u32 keypair_generation = 0;
+    u32 generation = 0;
     const void *ssl_device_key = NULL;
     const void *ssl_iv = NULL;
     u32 key_size = 0;
     void *keypair_ctr_key = NULL;
     bool enforce_unique = true;
 
-    if (!_get_rsa_ssl_key(cal0, &ssl_device_key, &key_size, &ssl_iv, &keypair_generation)) {
+    if (!_get_rsa_ssl_key(cal0, &ssl_device_key, &key_size, &ssl_iv, &generation)) {
         EPRINTF("Crc16 error reading device key.");
         return false;
     }
 
-    if (key_size == SSL_RSA_KEYPAIR_SIZE) {
+    if (key_size == SSL_RSA_KEY_SIZE) {
         bool all_zero = true;
         const u8 *key8 = (const u8 *)ssl_device_key;
-        for (u32 i = RSA_2048_KEY_SIZE; i < SSL_RSA_KEYPAIR_SIZE; i++) {
+        for (u32 i = RSA_2048_KEY_SIZE; i < SSL_RSA_KEY_SIZE; i++) {
             if (key8[i] != 0) {
                 all_zero = false;
                 break;
             }
         }
         if (all_zero) {
-            // keypairs of this form are not encrypted
-            memcpy(keys->ssl_rsa_keypair, ssl_device_key, RSA_2048_KEY_SIZE);
+            // Keypairs of this form are not encrypted
+            memcpy(keys->ssl_rsa_key, ssl_device_key, RSA_2048_KEY_SIZE);
             return true;
         }
 
         u32 option = SET_SEAL_KEY_INDEX(SEAL_KEY_DECRYPT_DEVICE_UNIQUE_DATA);
         keypair_ctr_key = keys->ssl_rsa_kek_legacy;
-        _derive_ssl_rsa_kek(keys, 7, keypair_ctr_key, ssl_rsa_kekek_source, ssl_rsa_kek_source_legacy, keypair_generation, option);
+        _derive_ssl_rsa_kek(KS_AES_ECB, keys, keypair_ctr_key, ssl_rsa_kekek_source, ssl_rsa_kek_source_legacy, generation, option);
         enforce_unique = false;
     }
 
-    if (keypair_generation) {
+    if (generation) {
         u32 option = SET_SEAL_KEY_INDEX(SEAL_KEY_IMPORT_SSL_KEY) | IS_DEVICE_UNIQUE;
         keypair_ctr_key = keys->ssl_rsa_kek_personalized;
-        _derive_ssl_rsa_kek(keys, 7, keypair_ctr_key, ssl_client_cert_kek_source, ssl_client_cert_key_source, keypair_generation, option);
+        _derive_ssl_rsa_kek(KS_AES_ECB, keys, keypair_ctr_key, ssl_client_cert_kek_source, ssl_client_cert_key_source, generation, option);
     } else {
         keypair_ctr_key = keys->ssl_rsa_kek;
     }
 
     u32 ctr_size = enforce_unique ? key_size - 0x20 : key_size - 0x10;
-    se_aes_key_set(6, keypair_ctr_key, AES_128_KEY_SIZE);
-    se_aes_crypt_ctr(6, keys->ssl_rsa_keypair, ctr_size, ssl_device_key, ctr_size, ssl_iv);
+    se_aes_key_set(KS_AES_CTR, keypair_ctr_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, keys->ssl_rsa_key, ctr_size, ssl_device_key, ctr_size, ssl_iv);
 
     if (enforce_unique) {
         u32 j_block[AES_128_KEY_SIZE / 4] = {0};
-        se_aes_key_set(7, keypair_ctr_key, AES_128_KEY_SIZE);
-        _ghash(7, j_block, ssl_iv, 0x10, NULL, false);
+        se_aes_key_set(KS_AES_ECB, keypair_ctr_key, AES_128_KEY_SIZE);
+        _ghash(KS_AES_ECB, j_block, ssl_iv, 0x10, NULL, false);
 
         u32 calc_mac[AES_128_KEY_SIZE / 4] = {0};
-        _ghash(7, calc_mac, keys->ssl_rsa_keypair, ctr_size, j_block, true);
+        _ghash(KS_AES_ECB, calc_mac, keys->ssl_rsa_key, ctr_size, j_block, true);
 
         const u8 *key8 = (const u8 *)ssl_device_key;
         if (memcmp(calc_mac, &key8[ctr_size], 0x10) != 0) {
             EPRINTF("SSL keypair has invalid GMac.");
-            memset(keys->ssl_rsa_keypair, 0, sizeof(keys->ssl_rsa_keypair));
+            memset(keys->ssl_rsa_key, 0, sizeof(keys->ssl_rsa_key));
             return false;
         }
     }
@@ -574,7 +574,7 @@ static bool _get_rsa_eticket_key(const nx_emmc_cal0_t *cal0, const void **out_ke
     if (cal0->ext_ecc_rsa2048_eticket_key_crc == crc16_calc(cal0->ext_ecc_rsa2048_eticket_key_iv, ext_key_crc_size)) {
         *out_key = cal0->ext_ecc_rsa2048_eticket_key;
         *out_iv = cal0->ext_ecc_rsa2048_eticket_key_iv;
-        // settings sysmodule manually zeroes this out below cal version 9
+        // Settings sysmodule manually zeroes this out below cal version 9
         *out_generation = cal0->version <= 8 ? 0 : cal0->ext_ecc_rsa2048_eticket_key_ver;
     } else if (cal0->rsa2048_eticket_key_crc == crc16_calc(cal0->rsa2048_eticket_key_iv, key_crc_size)) {
         *out_key = cal0->rsa2048_eticket_key;
@@ -598,35 +598,35 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
     }
 
     nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
-    u32 keypair_generation = 0;
+    u32 generation = 0;
     const void *eticket_device_key = NULL;
     const void *eticket_iv = NULL;
     void *keypair_ctr_key = NULL;
 
-    if (!_get_rsa_eticket_key(cal0, &eticket_device_key, &eticket_iv, &keypair_generation)) {
+    if (!_get_rsa_eticket_key(cal0, &eticket_device_key, &eticket_iv, &generation)) {
         EPRINTF("Crc16 error reading device key.");
         return false;
     }
 
-    if (keypair_generation) {
+    if (generation) {
         u32 option = SET_SEAL_KEY_INDEX(SEAL_KEY_IMPORT_ES_DEVICE_KEY) | IS_DEVICE_UNIQUE;
-        _derive_eticket_rsa_kek(keys, 7, keys->eticket_rsa_kek_personalized, is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source, keypair_generation, option);
+        _derive_eticket_rsa_kek(KS_AES_ECB, keys, keys->eticket_rsa_kek_personalized, is_dev ? eticket_rsa_kek_source_dev : eticket_rsa_kek_source, generation, option);
         keypair_ctr_key = keys->eticket_rsa_kek_personalized;
     } else {
         keypair_ctr_key = keys->eticket_rsa_kek;
     }
 
-    se_aes_key_set(6, keypair_ctr_key, AES_128_KEY_SIZE);
-    se_aes_crypt_ctr(6, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), eticket_device_key, sizeof(keys->eticket_rsa_keypair), eticket_iv);
+    se_aes_key_set(KS_AES_CTR, keypair_ctr_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), eticket_device_key, sizeof(keys->eticket_rsa_keypair), eticket_iv);
 
     if (_read_be_u32(keys->eticket_rsa_keypair.public_exponent, 0) != RSA_PUBLIC_EXPONENT) {
-        // try legacy kek source
+        // Try legacy kek source
         u32 option = SET_SEAL_KEY_INDEX(SEAL_KEY_IMPORT_ES_DEVICE_KEY);
         keypair_ctr_key = keys->temp_key;
-        _derive_eticket_rsa_kek(keys, 7, keypair_ctr_key, eticket_rsa_kek_source_legacy, 0, option);
+        _derive_eticket_rsa_kek(KS_AES_ECB, keys, keypair_ctr_key, eticket_rsa_kek_source_legacy, 0, option);
 
-        se_aes_key_set(6, keypair_ctr_key, AES_128_KEY_SIZE);
-        se_aes_crypt_ctr(6, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), eticket_device_key, sizeof(keys->eticket_rsa_keypair), eticket_iv);
+        se_aes_key_set(KS_AES_CTR, keypair_ctr_key, AES_128_KEY_SIZE);
+        se_aes_crypt_ctr(KS_AES_CTR, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), eticket_device_key, sizeof(keys->eticket_rsa_keypair), eticket_iv);
 
         if (_read_be_u32(keys->eticket_rsa_keypair.public_exponent, 0) != RSA_PUBLIC_EXPONENT) {
             EPRINTF("Invalid public exponent.");
@@ -637,7 +637,7 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
         }
     }
 
-    if (!_test_key_pair(keys->eticket_rsa_keypair.public_exponent, keys->eticket_rsa_keypair.private_exponent, keys->eticket_rsa_keypair.modulus)) {
+    if (!_test_rsa_keypair(keys->eticket_rsa_keypair.public_exponent, keys->eticket_rsa_keypair.private_exponent, keys->eticket_rsa_keypair.modulus)) {
         EPRINTF("Invalid keypair. Check eticket_rsa_kek.");
         memset(&keys->eticket_rsa_keypair, 0, sizeof(keys->eticket_rsa_keypair));
         return false;
@@ -655,20 +655,20 @@ static bool _derive_titlekeys(key_derivation_ctx_t *keys, titlekey_buffer_t *tit
 static bool _derive_emmc_keys(key_derivation_ctx_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
     // Set BIS keys.
     // PRODINFO/PRODINFOF
-    se_aes_key_set(0, keys->bis_key[0] + 0x00, AES_128_KEY_SIZE);
-    se_aes_key_set(1, keys->bis_key[0] + 0x10, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_00_0, keys->bis_key[0] + 0x00, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_00_1, keys->bis_key[0] + 0x10, AES_128_KEY_SIZE);
     // SAFE
-    se_aes_key_set(2, keys->bis_key[1] + 0x00, AES_128_KEY_SIZE);
-    se_aes_key_set(3, keys->bis_key[1] + 0x10, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_01_0, keys->bis_key[1] + 0x00, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_01_1, keys->bis_key[1] + 0x10, AES_128_KEY_SIZE);
     // SYSTEM/USER
-    se_aes_key_set(4, keys->bis_key[2] + 0x00, AES_128_KEY_SIZE);
-    se_aes_key_set(5, keys->bis_key[2] + 0x10, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_02_0, keys->bis_key[2] + 0x00, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_BIS_02_1, keys->bis_key[2] + 0x10, AES_128_KEY_SIZE);
 
     if (!emummc_storage_set_mmc_partition(EMMC_GPP)) {
         EPRINTF("Unable to set partition.");
         return false;
     }
-    // Parse eMMC GPT.
+    // Parse eMMC GPT
     LIST_INIT(gpt);
     nx_emmc_gpt_parse(&gpt, &emmc_storage);
 
@@ -877,7 +877,7 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
         SAVE_KEY(ssl_rsa_kek_source);
     }
     SAVE_KEY(ssl_rsa_kekek_source);
-    _save_key("ssl_rsa_keypair", keys->ssl_rsa_keypair, RSA_2048_KEY_SIZE, text_buffer);
+    _save_key("ssl_rsa_key", keys->ssl_rsa_key, RSA_2048_KEY_SIZE, text_buffer);
     SAVE_KEY_FAMILY_VAR(titlekek, keys->titlekek, 0);
     SAVE_KEY(titlekek_source);
     SAVE_KEY_VAR(tsec_key, keys->tsec_key);
@@ -931,8 +931,8 @@ static void _save_keys_to_sd(key_derivation_ctx_t *keys, titlekey_buffer_t *titl
 static bool _check_keyslot_access() {
     u8 test_data[AES_128_KEY_SIZE] = {0};
     const u8 test_ciphertext[AES_128_KEY_SIZE] = {0};
-    se_aes_key_set(8, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f", SE_KEY_128_SIZE);
-    se_aes_crypt_block_ecb(8, DECRYPT, test_data, test_ciphertext);
+    se_aes_key_set(KS_AES_ECB, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f", SE_KEY_128_SIZE);
+    se_aes_crypt_block_ecb(KS_AES_ECB, DECRYPT, test_data, test_ciphertext);
 
     return memcmp(test_data, "\x7b\x1d\x29\xa1\x6c\xf8\xcc\xab\x84\xf0\xb8\xa5\x98\xe4\x2f\xa6", SE_KEY_128_SIZE) == 0;
 }
@@ -952,9 +952,9 @@ static void _derive_master_keys(key_derivation_ctx_t *prod_keys, key_derivation_
 
         u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
         se_get_aes_keys(aes_keys + SZ_2K, aes_keys, AES_128_KEY_SIZE);
-        memcpy(&dev_keys->tsec_root_key, aes_keys + 11 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
-        memcpy(keys->tsec_key, aes_keys + 12 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
-        memcpy(&prod_keys->tsec_root_key, aes_keys + 13 * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
+        memcpy(&dev_keys->tsec_root_key,  aes_keys + KS_TSEC_ROOT_DEV * AES_128_KEY_SIZE, AES_128_KEY_SIZE);
+        memcpy(keys->tsec_key,            aes_keys + KS_TSEC * AES_128_KEY_SIZE,          AES_128_KEY_SIZE);
+        memcpy(&prod_keys->tsec_root_key, aes_keys + KS_TSEC_ROOT * AES_128_KEY_SIZE,     AES_128_KEY_SIZE);
         free(aes_keys);
 
         _derive_master_keys_from_latest_key(prod_keys, false);
@@ -1069,19 +1069,19 @@ void derive_amiibo_keys() {
         return;
     }
 
-    _decrypt_aes_key(8, keys, keys->temp_key, nfc_key_source, 0, 0);
+    _decrypt_aes_key(KS_AES_ECB, keys, keys->temp_key, nfc_key_source, 0, 0);
 
     nfc_keyblob_t __attribute__((aligned(4))) nfc_keyblob;
     static const u8 nfc_iv[AES_128_KEY_SIZE] = {
         0xB9, 0x1D, 0xC1, 0xCF, 0x33, 0x5F, 0xA6, 0x13, 0x2A, 0xEF, 0x90, 0x99, 0xAA, 0xCA, 0x93, 0xC8};
-    se_aes_key_set(6, keys->temp_key, AES_128_KEY_SIZE);
-    se_aes_crypt_ctr(6, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
+    se_aes_key_set(KS_AES_CTR, keys->temp_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
 
     minerva_periodic_training();
 
     u8 xor_pad[0x20] __attribute__((aligned(4))) = {0};
-    se_aes_key_set(6, nfc_keyblob.ctr_key, AES_128_KEY_SIZE);
-    se_aes_crypt_ctr(6, xor_pad, sizeof(xor_pad), xor_pad, sizeof(xor_pad), nfc_keyblob.ctr_iv);
+    se_aes_key_set(KS_AES_CTR, nfc_keyblob.ctr_key, AES_128_KEY_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, xor_pad, sizeof(xor_pad), xor_pad, sizeof(xor_pad), nfc_keyblob.ctr_iv);
 
     minerva_periodic_training();
 
@@ -1236,10 +1236,10 @@ static void _decrypt_aes_key(u32 ks, key_derivation_ctx_t *keys, void *out_key, 
 
 // Equivalent to smc::GetSecureData
 static void _get_secure_data(key_derivation_ctx_t *keys, void *out_data) {
-    se_aes_key_set(6, keys->device_key, AES_128_KEY_SIZE);
+    se_aes_key_set(KS_AES_CTR, keys->device_key, AES_128_KEY_SIZE);
     u8 *d = (u8 *)out_data;
-    se_aes_crypt_ctr(6, d + AES_128_KEY_SIZE * 0, AES_128_KEY_SIZE, secure_data_source, AES_128_KEY_SIZE, secure_data_counters[0]);
-    se_aes_crypt_ctr(6, d + AES_128_KEY_SIZE * 1, AES_128_KEY_SIZE, secure_data_source, AES_128_KEY_SIZE, secure_data_counters[0]);
+    se_aes_crypt_ctr(KS_AES_CTR, d + AES_128_KEY_SIZE * 0, AES_128_KEY_SIZE, secure_data_source, AES_128_KEY_SIZE, secure_data_counters[0]);
+    se_aes_crypt_ctr(KS_AES_CTR, d + AES_128_KEY_SIZE * 1, AES_128_KEY_SIZE, secure_data_source, AES_128_KEY_SIZE, secure_data_counters[0]);
 
     // Apply tweak
     for (u32 i = 0; i < AES_128_KEY_SIZE; i++) {
@@ -1252,8 +1252,8 @@ static void _generate_specific_aes_key(u32 ks, key_derivation_ctx_t *keys, void 
     if (fuse_read_bootrom_rev() >= 0x7F) {
         _get_device_key(ks, keys, keys->temp_key, generation - 1);
         se_aes_key_set(ks, keys->temp_key, AES_128_KEY_SIZE);
-        se_aes_unwrap_key(ks, ks, retail_specific_aes_key_source); // kek = unwrap(rsaks, devkey)
-        se_aes_crypt_ecb(ks, DECRYPT, out_key, AES_128_KEY_SIZE * 2, key_source, AES_128_KEY_SIZE * 2); // bkey = unwrap(bkeys, kek)
+        se_aes_unwrap_key(ks, ks, retail_specific_aes_key_source);
+        se_aes_crypt_ecb(ks, DECRYPT, out_key, AES_128_KEY_SIZE * 2, key_source, AES_128_KEY_SIZE * 2);
     } else {
         _get_secure_data(keys, out_key);
     }
@@ -1379,7 +1379,7 @@ static void _ghash(u32 ks, void *dst, const void *src, u32 src_size, const void 
     memcpy(dst, x, 0x10);
 }
 
-static bool _test_key_pair(const void *public_exponent, const void *private_exponent, const void *modulus) {
+static bool _test_rsa_keypair(const void *public_exponent, const void *private_exponent, const void *modulus) {
     u8  plaintext[RSA_2048_KEY_SIZE] __attribute__((aligned(4))) = {0},
         ciphertext[RSA_2048_KEY_SIZE] __attribute__((aligned(4))) = {0},
         work[RSA_2048_KEY_SIZE] __attribute__((aligned(4))) = {0};
