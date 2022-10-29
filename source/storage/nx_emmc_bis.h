@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 shchmue
+ * Copyright (c) 2019-2022 shchmue
  * Copyright (c) 2019 CTCaer
  *
  * This program is free software; you can redistribute it and/or modify it
