@@ -721,31 +721,31 @@ out:;
 // _mgf1_xor() and rsa_oaep_decode were derived from Atmosphère
 static void _mgf1_xor(void *masked, u32 masked_size, const void *seed, u32 seed_size)
 {
-    u8 cur_hash[0x20] __attribute__((aligned(4)));
-    u8 hash_buf[0xe4] __attribute__((aligned(4)));
+	u8 cur_hash[0x20] __attribute__((aligned(4)));
+	u8 hash_buf[0xe4] __attribute__((aligned(4)));
 
-    u32 hash_buf_size = seed_size + 4;
-    memcpy(hash_buf, seed, seed_size);
-    u32 round_num = 0;
+	u32 hash_buf_size = seed_size + 4;
+	memcpy(hash_buf, seed, seed_size);
+	u32 round_num = 0;
 
-    u8 *p_out = (u8 *)masked;
+	u8 *p_out = (u8 *)masked;
 
-    while (masked_size) {
-        u32 cur_size = MIN(masked_size, 0x20);
+	while (masked_size) {
+		u32 cur_size = MIN(masked_size, 0x20);
 
-        for (u32 i = 0; i < 4; i++)
-            hash_buf[seed_size + 3 - i] = (round_num >> (8 * i)) & 0xff;
-        round_num++;
+		for (u32 i = 0; i < 4; i++)
+			hash_buf[seed_size + 3 - i] = (round_num >> (8 * i)) & 0xff;
+		round_num++;
 
-        se_calc_sha256_oneshot(cur_hash, hash_buf, hash_buf_size);
+		se_calc_sha256_oneshot(cur_hash, hash_buf, hash_buf_size);
 
-        for (unsigned int i = 0; i < cur_size; i++) {
-            *p_out ^= cur_hash[i];
-            p_out++;
-        }
+		for (unsigned int i = 0; i < cur_size; i++) {
+			*p_out ^= cur_hash[i];
+			p_out++;
+		}
 
-        masked_size -= cur_size;
-    }
+		masked_size -= cur_size;
+	}
 }
 
 u32 se_rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label_digest_size, u8 *buf, u32 buf_size)

@@ -24,6 +24,8 @@
 #define AES_128_KEY_SIZE 16
 #define RSA_2048_KEY_SIZE 256
 
+#define RSA_PUBLIC_EXPONENT 65537
+
 // only tickets of type Rsa2048Sha256 are expected
 typedef struct {
     u32 signature_type;   // always 0x10004
@@ -104,6 +106,29 @@ typedef struct {
     u8 xor_pad[0x20];
 } nfc_save_key_t;
 
+typedef enum {
+    SEAL_KEY_LOAD_AES_KEY = 0,
+    SEAL_KEY_DECRYPT_DEVICE_UNIQUE_DATA = 1,
+    SEAL_KEY_IMPORT_LOTUS_KEY = 2,
+    SEAL_KEY_IMPORT_ES_DEVICE_KEY = 3,
+    SEAL_KEY_REENCRYPT_DEVICE_UNIQUE_DATA = 4,
+    SEAL_KEY_IMPORT_SSL_KEY = 5,
+    SEAL_KEY_IMPORT_ES_CLIENT_CERT_KEY = 6,
+} seal_key_t;
+
+typedef enum {
+    NOT_DEVICE_UNIQUE = 0,
+    IS_DEVICE_UNIQUE = 1,
+} device_unique_t;
+
+#define SET_SEAL_KEY_INDEX(x) (((x) & 7) << 5)
+#define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
+#define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
+
+#define WRAPPED_RSA_EXT_DATA_SIZE 0x20
+#define SSL_RSA_KEYPAIR_SIZE (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
+#define SSL_RSA_EXT_KEYPAIR_SIZE (SSL_RSA_KEYPAIR_SIZE + WRAPPED_RSA_EXT_DATA_SIZE)
+
 typedef struct {
     u8  temp_key[AES_128_KEY_SIZE],
         bis_key[4][AES_128_KEY_SIZE * 2],
@@ -117,8 +142,9 @@ typedef struct {
         eticket_rsa_kek[AES_128_KEY_SIZE],
         eticket_rsa_kek_personalized[AES_128_KEY_SIZE],
         ssl_rsa_kek[AES_128_KEY_SIZE],
+        ssl_rsa_kek_legacy[AES_128_KEY_SIZE],
         ssl_rsa_kek_personalized[AES_128_KEY_SIZE],
-        ssl_rsa_key[RSA_2048_KEY_SIZE + 0x20],
+        ssl_rsa_keypair[RSA_2048_KEY_SIZE + 0x20],
         // keyblob-derived families
         keyblob_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
         keyblob_mac_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
@@ -133,7 +159,7 @@ typedef struct {
         tsec_root_key[AES_128_KEY_SIZE];
     u32 sbk[4];
     keyblob_t keyblob[KB_FIRMWARE_VERSION_600 + 1];
-    rsa_keypair_t rsa_keypair;
+    rsa_keypair_t eticket_rsa_keypair;
 } key_derivation_ctx_t;
 
 typedef struct {
