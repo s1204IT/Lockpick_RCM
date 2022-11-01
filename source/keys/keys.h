@@ -27,12 +27,12 @@
 #define RSA_PUBLIC_EXPONENT 65537
 
 // Lockpick_RCM keyslots
-#define KS_BIS_00_0 0
-#define KS_BIS_00_1 1
-#define KS_BIS_01_0 2
-#define KS_BIS_01_1 3
-#define KS_BIS_02_0 4
-#define KS_BIS_02_1 5
+#define KS_BIS_00_CRYPT 0
+#define KS_BIS_00_TWEAK 1
+#define KS_BIS_01_CRYPT 2
+#define KS_BIS_01_TWEAK 3
+#define KS_BIS_02_CRYPT 4
+#define KS_BIS_02_TWEAK 5
 #define KS_AES_CTR  6
 #define KS_AES_ECB  8
 #define KS_AES_CMAC 10
@@ -148,7 +148,8 @@ typedef enum {
 #define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
 #define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
 
-#define SSL_RSA_KEY_SIZE (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
+#define SSL_RSA_KEY_SIZE         (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
+#define ETICKET_RSA_KEYPAIR_SIZE (RSA_2048_KEY_SIZE * 2 + AES_128_KEY_SIZE * 2)
 
 typedef struct {
     u8  temp_key[AES_128_KEY_SIZE],
