@@ -96,5 +96,7 @@ void panic(u32 val);
 void power_set_state(power_state_t state);
 void power_set_state_ex(void *param);
 
+u32 read_le_u32(const void *buffer, u32 offset);
+u32 read_be_u32(const void *buffer, u32 offset);
 
 #endif

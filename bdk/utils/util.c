@@ -230,3 +230,17 @@ void power_set_state_ex(void *param)
 	power_state_t *state = (power_state_t *)param;
 	power_set_state(*state);
 }
+
+u32 read_le_u32(const void *buffer, u32 offset) {
+	return	(*(u8*)(buffer + offset + 0)        ) |
+			(*(u8*)(buffer + offset + 1) << 0x08) |
+			(*(u8*)(buffer + offset + 2) << 0x10) |
+			(*(u8*)(buffer + offset + 3) << 0x18);
+}
+
+u32 read_be_u32(const void *buffer, u32 offset) {
+	return	(*(u8*)(buffer + offset + 3)        ) |
+			(*(u8*)(buffer + offset + 2) << 0x08) |
+			(*(u8*)(buffer + offset + 1) << 0x10) |
+			(*(u8*)(buffer + offset + 0) << 0x18);
+}

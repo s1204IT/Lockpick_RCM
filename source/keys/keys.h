@@ -17,45 +17,19 @@
 #ifndef _KEYS_H_
 #define _KEYS_H_
 
-#include <utils/types.h>
+#include "crypto.h"
 
 #include "../hos/hos.h"
-
-#define AES_128_KEY_SIZE 16
-#define RSA_2048_KEY_SIZE 256
-
-#define RSA_PUBLIC_EXPONENT 65537
-
-// Lockpick_RCM keyslots
-#define KS_BIS_00_CRYPT 0
-#define KS_BIS_00_TWEAK 1
-#define KS_BIS_01_CRYPT 2
-#define KS_BIS_01_TWEAK 3
-#define KS_BIS_02_CRYPT 4
-#define KS_BIS_02_TWEAK 5
-#define KS_AES_CTR  6
-#define KS_AES_ECB  8
-#define KS_AES_CMAC 10
-
-// Mariko keyslots
-#define KS_MARIKO_KEK 12
-#define KS_MARIKO_BEK 13
-
-// Other Switch keyslots
-#define KS_TSEC        12
-#define KS_SECURE_BOOT 14
-
-// Atmosphere keygen keyslots
-#define KS_TSEC_ROOT_DEV 11
-#define KS_TSEC_ROOT     13
+#include <sec/se_t210.h>
+#include <utils/types.h>
 
 // only tickets of type Rsa2048Sha256 are expected
 typedef struct {
     u32 signature_type;   // always 0x10004
-    u8 signature[RSA_2048_KEY_SIZE];
+    u8 signature[SE_RSA2048_DIGEST_SIZE];
     u8 sig_padding[0x3C];
     char issuer[0x40];
-    u8 titlekey_block[RSA_2048_KEY_SIZE];
+    u8 titlekey_block[SE_RSA2048_DIGEST_SIZE];
     u8 format_version;
     u8 titlekey_type;
     u16 ticket_version;
@@ -89,26 +63,6 @@ typedef struct {
 } titlekey_buffer_t;
 
 typedef struct {
-    u8 private_exponent[RSA_2048_KEY_SIZE];
-    u8 modulus[RSA_2048_KEY_SIZE];
-    u8 public_exponent[4];
-    u8 reserved[0xC];
-} rsa_keypair_t;
-
-typedef struct {
-    u8 master_kek[AES_128_KEY_SIZE];
-    u8 data[0x70];
-    u8 package1_key[AES_128_KEY_SIZE];
-} keyblob_t;
-
-typedef struct {
-    u8 cmac[0x10];
-    u8 iv[0x10];
-    keyblob_t key_data;
-    u8 unused[0x150];
-} encrypted_keyblob_t;
-
-typedef struct {
     char phrase[0xE];
     u8 seed[0xE];
     u8 hmac_key[0x10];
@@ -128,61 +82,6 @@ typedef struct {
     u8 seed[0x10];
     u8 xor_pad[0x20];
 } nfc_save_key_t;
-
-typedef enum {
-    SEAL_KEY_LOAD_AES_KEY = 0,
-    SEAL_KEY_DECRYPT_DEVICE_UNIQUE_DATA = 1,
-    SEAL_KEY_IMPORT_LOTUS_KEY = 2,
-    SEAL_KEY_IMPORT_ES_DEVICE_KEY = 3,
-    SEAL_KEY_REENCRYPT_DEVICE_UNIQUE_DATA = 4,
-    SEAL_KEY_IMPORT_SSL_KEY = 5,
-    SEAL_KEY_IMPORT_ES_CLIENT_CERT_KEY = 6,
-} seal_key_t;
-
-typedef enum {
-    NOT_DEVICE_UNIQUE = 0,
-    IS_DEVICE_UNIQUE = 1,
-} device_unique_t;
-
-#define SET_SEAL_KEY_INDEX(x) (((x) & 7) << 5)
-#define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
-#define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
-
-#define SSL_RSA_KEY_SIZE         (RSA_2048_KEY_SIZE + AES_128_KEY_SIZE)
-#define ETICKET_RSA_KEYPAIR_SIZE (RSA_2048_KEY_SIZE * 2 + AES_128_KEY_SIZE * 2)
-
-typedef struct {
-    u8  temp_key[AES_128_KEY_SIZE],
-        bis_key[4][AES_128_KEY_SIZE * 2],
-        device_key[AES_128_KEY_SIZE],
-        device_key_4x[AES_128_KEY_SIZE],
-        sd_seed[AES_128_KEY_SIZE],
-        // FS-related keys
-        header_key[AES_128_KEY_SIZE * 2],
-        save_mac_key[AES_128_KEY_SIZE],
-        // other sysmodule keys
-        eticket_rsa_kek[AES_128_KEY_SIZE],
-        eticket_rsa_kek_personalized[AES_128_KEY_SIZE],
-        ssl_rsa_kek[AES_128_KEY_SIZE],
-        ssl_rsa_kek_legacy[AES_128_KEY_SIZE],
-        ssl_rsa_kek_personalized[AES_128_KEY_SIZE],
-        ssl_rsa_key[RSA_2048_KEY_SIZE + 0x20],
-        // keyblob-derived families
-        keyblob_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
-        keyblob_mac_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
-        package1_key[KB_FIRMWARE_VERSION_600 + 1][AES_128_KEY_SIZE],
-        // master key-derived families
-        key_area_key[3][KB_FIRMWARE_VERSION_MAX + 1][AES_128_KEY_SIZE],
-        master_kek[KB_FIRMWARE_VERSION_MAX + 1][AES_128_KEY_SIZE],
-        master_key[KB_FIRMWARE_VERSION_MAX + 1][AES_128_KEY_SIZE],
-        package2_key[KB_FIRMWARE_VERSION_MAX + 1][AES_128_KEY_SIZE],
-        titlekek[KB_FIRMWARE_VERSION_MAX + 1][AES_128_KEY_SIZE],
-        tsec_key[AES_128_KEY_SIZE],
-        tsec_root_key[AES_128_KEY_SIZE];
-    u32 sbk[4];
-    keyblob_t keyblob[KB_FIRMWARE_VERSION_600 + 1];
-    rsa_keypair_t eticket_rsa_keypair;
-} key_derivation_ctx_t;
 
 typedef struct {
     char rights_id[0x20];

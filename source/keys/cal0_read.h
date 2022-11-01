@@ -14,11 +14,14 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _GMAC_H_
-#define _GMAC_H_
+#ifndef _CAL0_READ_H_
+#define _CAL0_READ_H_
 
+#include "../storage/nx_emmc_bis.h"
 #include <utils/types.h>
 
-void calc_gmac(u32 ks, void *out_gmac, const void *data, u32 size, const void *key, const void *iv);
+bool cal0_read(u32 tweak_ks, u32 crypt_ks, void *read_buffer);
+bool cal0_get_ssl_rsa_key(const nx_emmc_cal0_t *cal0, const void **out_key, u32 *out_key_size, const void **out_iv, u32 *out_generation);
+bool cal0_get_eticket_rsa_key(const nx_emmc_cal0_t *cal0, const void **out_key, u32 *out_key_size, const void **out_iv, u32 *out_generation);
 
 #endif
