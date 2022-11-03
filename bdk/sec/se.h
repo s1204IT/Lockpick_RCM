@@ -49,6 +49,5 @@ int se_calc_sha256(void *hash, u32 *msg_left, const void *src, u32 src_size, u64
 int se_calc_sha256_oneshot(void *hash, const void *src, u32 src_size);
 int se_calc_sha256_finalize(void *hash, u32 *msg_left);
 int se_calc_hmac_sha256(void *dst, const void *src, u32 src_size, const void *key, u32 key_size);
-u32 se_rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label_digest_size, u8 *buf, u32 buf_size);
 
 #endif

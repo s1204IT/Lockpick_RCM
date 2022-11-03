@@ -65,6 +65,7 @@ static void _save_key(const char *name, const void *data, u32 len, char *outbuf)
 static void _save_key_family(const char *name, const void *data, u32 start_key, u32 num_keys, u32 len, char *outbuf);
 
 static void _derive_master_key_mariko(key_storage_t *keys, bool is_dev) {
+    minerva_periodic_training();
     // Relies on the SBK being properly set in slot 14
     se_aes_crypt_block_ecb(KS_SECURE_BOOT, DECRYPT, keys->device_key_4x, device_master_key_source_kek_source);
     // Derive all master keys based on Mariko KEK
@@ -94,6 +95,7 @@ static int _run_ams_keygen(key_storage_t *keys) {
 }
 
 static void _derive_master_keys_from_latest_key(key_storage_t *keys, bool is_dev) {
+    minerva_periodic_training();
     if (!h_cfg.t210b01) {
         u32 tsec_root_key_slot = is_dev ? 11 : 13;
         // Derive all master keys based on current root key
@@ -102,6 +104,8 @@ static void _derive_master_keys_from_latest_key(key_storage_t *keys, bool is_dev
             load_aes_key(KS_AES_ECB, keys->master_key[i + KB_FIRMWARE_VERSION_620], keys->master_kek[i + KB_FIRMWARE_VERSION_620], master_key_source);
         }
     }
+
+    minerva_periodic_training();
 
     // Derive all lower master keys
     for (u32 i = KB_FIRMWARE_VERSION_MAX; i > 0; i--) {
@@ -116,6 +120,8 @@ static void _derive_master_keys_from_latest_key(key_storage_t *keys, bool is_dev
 }
 
 static void _derive_keyblob_keys(key_storage_t *keys) {
+    minerva_periodic_training();
+
     u8 *keyblob_block = (u8 *)calloc(KB_FIRMWARE_VERSION_600 + 1, NX_EMMC_BLOCKSIZE);
     u32 keyblob_mac[SE_KEY_128_SIZE / 4] = {0};
     bool have_keyblobs = true;
@@ -194,6 +200,7 @@ static void _derive_bis_keys(key_storage_t *keys) {
 }
 
 static void _derive_non_unique_keys(key_storage_t *keys, bool is_dev) {
+    minerva_periodic_training();
     if (_key_exists(keys->master_key[0])) {
         const u32 generation = 0;
         const u32 option = GET_IS_DEVICE_UNIQUE(NOT_DEVICE_UNIQUE);
@@ -209,6 +216,7 @@ static void _derive_rsa_kek(u32 ks, key_storage_t *keys, void *out_rsa_kek, cons
 }
 
 static void _derive_misc_keys(key_storage_t *keys, bool is_dev) {
+    minerva_periodic_training();
     if (_key_exists(keys->device_key) || (_key_exists(keys->master_key[0]) && _key_exists(keys->device_key_4x))) {
         void *access_key = keys->temp_key;
         const u32 generation = 0;
@@ -231,6 +239,7 @@ static void _derive_misc_keys(key_storage_t *keys, bool is_dev) {
 
 static void _derive_per_generation_keys(key_storage_t *keys) {
     for (u32 generation = 0; generation < ARRAY_SIZE(keys->master_key); generation++) {
+        minerva_periodic_training();
         if (!_key_exists(keys->master_key[generation]))
             continue;
         for (u32 source_type = 0; source_type < ARRAY_SIZE(key_area_key_sources); source_type++) {
@@ -244,6 +253,45 @@ static void _derive_per_generation_keys(key_storage_t *keys) {
     }
 }
 
+// Returns true when terminator is found
+static bool _count_ticket_records(u32 buf_size, titlekey_buffer_t *titlekey_buffer, u32 *tkey_count) {
+    ticket_record_t *curr_ticket_record = (ticket_record_t *)titlekey_buffer->read_buffer;
+    for (u32 i = 0; i < buf_size; i += sizeof(ticket_record_t), curr_ticket_record++) {
+        if (curr_ticket_record->rights_id[0] == 0xFF)
+            return true;
+        (*tkey_count)++;
+    }
+    return false;
+}
+
+static void _decode_tickets(u32 buf_size, titlekey_buffer_t *titlekey_buffer, u32 remaining, u32 total, u32 x, u32 y, u32 *pct, u32 *last_pct, bool is_personalized) {
+    ticket_t *curr_ticket = (ticket_t *)titlekey_buffer->read_buffer;
+    for (u32 i = 0; i < MIN(buf_size / sizeof(ticket_t), remaining) * sizeof(ticket_t) && curr_ticket->signature_type != 0; i += sizeof(ticket_t), curr_ticket++) {
+        minerva_periodic_training();
+        *pct = (total - remaining) * 100 / total;
+        if (*pct > *last_pct && *pct <= 100) {
+            *last_pct = *pct;
+            tui_pbar(x, y, *pct, COLOR_GREEN, 0xFF155500);
+        }
+
+        // This is in case an encrypted volatile ticket is left behind
+        if (curr_ticket->signature_type != TICKET_SIG_TYPE_RSA2048_SHA256)
+            continue;
+
+        u8 *curr_titlekey = curr_ticket->titlekey_block;
+        const u32 block_size = SE_RSA2048_DIGEST_SIZE;
+        const u32 titlekey_size = sizeof(titlekey_buffer->titlekeys[0]);
+        if (is_personalized) {
+            se_rsa_exp_mod(0, curr_titlekey, block_size, curr_titlekey, block_size);
+            if (rsa_oaep_decode(curr_titlekey, titlekey_size, null_hash, sizeof(null_hash), curr_titlekey, block_size) != titlekey_size)
+                continue;
+        }
+        memcpy(titlekey_buffer->rights_ids[_titlekey_count], curr_ticket->rights_id, sizeof(titlekey_buffer->rights_ids[0]));
+        memcpy(titlekey_buffer->titlekeys[_titlekey_count], curr_titlekey, titlekey_size);
+        _titlekey_count++;
+    }
+}
+
 static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, titlekey_buffer_t *titlekey_buffer, rsa_keypair_t *rsa_keypair) {
     FIL fp;
     u64 br = buf_size;
@@ -251,8 +299,10 @@ static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, title
     u32 file_tkey_count = 0;
     u32 save_x = gfx_con.x, save_y = gfx_con.y;
     bool is_personalized = rsa_keypair != NULL;
-    u32 start_titlekey_count = _titlekey_count;
+    const char ticket_bin_path[32] = "/ticket.bin";
+    const char ticket_list_bin_path[32] = "/ticket_list.bin";
     char titlekey_save_path[32] = "bis:/save/80000000000000E1";
+    save_data_file_ctx_t ticket_file;
 
     if (is_personalized) {
         titlekey_save_path[25] = '2';
@@ -280,10 +330,6 @@ static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, title
         return false;
     }
 
-    const char ticket_bin_path[32] = "/ticket.bin";
-    const char ticket_list_bin_path[32] = "/ticket_list.bin";
-    save_data_file_ctx_t ticket_file;
-
     if (!save_open_file(save_ctx, &ticket_file, ticket_list_bin_path, OPEN_MODE_READ)) {
         EPRINTF("Unable to locate ticket_list.bin in save.");
         f_close(&fp);
@@ -292,22 +338,19 @@ static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, title
         return false;
     }
 
-    bool terminator_reached = false;
-    while (offset < ticket_file.size && !terminator_reached) {
-        if (!save_data_file_read(&ticket_file, &br, offset, titlekey_buffer->read_buffer, buf_size) || titlekey_buffer->read_buffer[0] == 0 || br != buf_size)
-            break;
-        offset += br;
+    // Read ticket list to get ticket count
+    while (offset < ticket_file.size) {
         minerva_periodic_training();
-        ticket_record_t *curr_ticket_record = (ticket_record_t *)titlekey_buffer->read_buffer;
-        for (u32 i = 0; i < buf_size; i += sizeof(ticket_record_t), curr_ticket_record++) {
-            if (curr_ticket_record->rights_id[0] == 0xFF) {
-                terminator_reached = true;
-                break;
-            }
-            file_tkey_count++;
+        if (!save_data_file_read(&ticket_file, &br, offset, titlekey_buffer->read_buffer, buf_size) ||
+            titlekey_buffer->read_buffer[0] == 0 ||
+            br != buf_size ||
+            _count_ticket_records(buf_size, titlekey_buffer, &file_tkey_count)
+        ) {
+            break;
         }
+        offset += br;
     }
-    TPRINTF("  Count keys...");
+    TPRINTF("  Count titlekeys...");
 
     if (!save_open_file(save_ctx, &ticket_file, ticket_bin_path, OPEN_MODE_READ)) {
         EPRINTF("Unable to locate ticket.bin in save.");
@@ -317,50 +360,17 @@ static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, title
         return false;
     }
 
-    if (is_personalized) {
+    if (is_personalized)
         se_rsa_key_set(0, rsa_keypair->modulus, sizeof(rsa_keypair->modulus), rsa_keypair->private_exponent, sizeof(rsa_keypair->private_exponent));
-    }
-
-    const u32 ticket_sig_type_rsa2048_sha256 = 0x10004;
 
     offset = 0;
-    terminator_reached = false;
-    u32 pct = 0, last_pct = 0, i = 0;
-    while (offset < ticket_file.size && !terminator_reached) {
+    u32 pct = 0, last_pct = 0, remaining = file_tkey_count;
+    while (offset < ticket_file.size && remaining) {
         if (!save_data_file_read(&ticket_file, &br, offset, titlekey_buffer->read_buffer, buf_size) || titlekey_buffer->read_buffer[0] == 0 || br != buf_size)
             break;
         offset += br;
-        ticket_t *curr_ticket = (ticket_t *)titlekey_buffer->read_buffer;
-        for (u32 j = 0; j < buf_size; j += sizeof(ticket_t), curr_ticket++) {
-            minerva_periodic_training();
-            pct = (_titlekey_count - start_titlekey_count) * 100 / file_tkey_count;
-            if (pct > last_pct && pct <= 100) {
-                last_pct = pct;
-                tui_pbar(save_x, save_y, pct, COLOR_GREEN, 0xFF155500);
-            }
-            if (i == file_tkey_count || curr_ticket->signature_type == 0) {
-                terminator_reached = true;
-                break;
-            }
-            if (curr_ticket->signature_type != ticket_sig_type_rsa2048_sha256) {
-                i++;
-                continue;
-            }
-            if (is_personalized) {
-                se_rsa_exp_mod(0, curr_ticket->titlekey_block, sizeof(curr_ticket->titlekey_block), curr_ticket->titlekey_block, sizeof(curr_ticket->titlekey_block));
-                if (se_rsa_oaep_decode(
-                        curr_ticket->titlekey_block, sizeof(titlekey_buffer->titlekeys[0]),
-                        null_hash, sizeof(null_hash),
-                        curr_ticket->titlekey_block, sizeof(curr_ticket->titlekey_block)
-                    ) != sizeof(titlekey_buffer->titlekeys[0])
-                )
-                    continue;
-            }
-            memcpy(titlekey_buffer->rights_ids[_titlekey_count], curr_ticket->rights_id, sizeof(titlekey_buffer->rights_ids[0]));
-            memcpy(titlekey_buffer->titlekeys[_titlekey_count], curr_ticket->titlekey_block, sizeof(titlekey_buffer->titlekeys[0]));
-            _titlekey_count++;
-            i++;
-        }
+        _decode_tickets(buf_size, titlekey_buffer, remaining, file_tkey_count, save_x, save_y, &pct, &last_pct, is_personalized);
+        remaining -= MIN(buf_size / sizeof(ticket_t), remaining);
     }
     tui_pbar(save_x, save_y, 100, COLOR_GREEN, 0xFF155500);
     f_close(&fp);
@@ -844,21 +854,11 @@ static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_bu
     free(text_buffer);
 }
 
-static bool _check_keyslot_access() {
-    u8 test_data[SE_KEY_128_SIZE] = {0};
-    const u8 test_ciphertext[SE_KEY_128_SIZE] = {0};
-    se_aes_key_set(KS_AES_ECB, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f", SE_KEY_128_SIZE);
-    se_aes_crypt_block_ecb(KS_AES_ECB, DECRYPT, test_data, test_ciphertext);
-
-    return memcmp(test_data, "\x7b\x1d\x29\xa1\x6c\xf8\xcc\xab\x84\xf0\xb8\xa5\x98\xe4\x2f\xa6", SE_KEY_128_SIZE) == 0;
-}
-
 static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_keys, bool is_dev) {
     key_storage_t *keys = is_dev ? dev_keys : prod_keys;
 
     if (h_cfg.t210b01) {
         _derive_master_key_mariko(keys, is_dev);
-        minerva_periodic_training();
         _derive_master_keys_from_latest_key(keys, is_dev);
     } else {
         int res = _run_ams_keygen(keys);
@@ -874,9 +874,7 @@ static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_key
         free(aes_keys);
 
         _derive_master_keys_from_latest_key(prod_keys, false);
-        minerva_periodic_training();
         _derive_master_keys_from_latest_key(dev_keys, true);
-        minerva_periodic_training();
         _derive_keyblob_keys(keys);
     }
 }
@@ -884,7 +882,7 @@ static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_key
 static void _derive_keys() {
     minerva_periodic_training();
 
-    if (!_check_keyslot_access()) {
+    if (!check_keyslot_access()) {
         EPRINTF("Unable to set crypto keyslots!\nTry launching payload differently\n or flash Spacecraft-NX if using a modchip.");
         return;
     }
@@ -917,19 +915,10 @@ static void _derive_keys() {
 
     TPRINTFARGS("%kBIS keys...     ", colors[(color_idx++) % 6]);
 
-    minerva_periodic_training();
     _derive_misc_keys(keys, is_dev);
-
-    minerva_periodic_training();
     _derive_non_unique_keys(&prod_keys, is_dev);
-
-    minerva_periodic_training();
     _derive_non_unique_keys(&dev_keys, is_dev);
-
-    minerva_periodic_training();
     _derive_per_generation_keys(&prod_keys);
-
-    minerva_periodic_training();
     _derive_per_generation_keys(&dev_keys);
 
     titlekey_buffer_t *titlekey_buffer = (titlekey_buffer_t *)TITLEKEY_BUF_ADR;
@@ -956,6 +945,37 @@ static void _derive_keys() {
         _save_keys_to_sd(&dev_keys, NULL, true);
     }
 }
+
+ static void _decrypt_amiibo_keys(key_storage_t *keys, const u8 *encrypted_keys, nfc_save_key_t nfc_save_keys[2]) {
+    u32 kek[SE_KEY_128_SIZE / 4] = {0};
+    decrypt_aes_key(KS_AES_ECB, keys, kek, nfc_key_source, 0, 0);
+
+    nfc_keyblob_t __attribute__((aligned(4))) nfc_keyblob;
+    static const u8 nfc_iv[SE_KEY_128_SIZE] = {
+        0xB9, 0x1D, 0xC1, 0xCF, 0x33, 0x5F, 0xA6, 0x13, 0x2A, 0xEF, 0x90, 0x99, 0xAA, 0xCA, 0x93, 0xC8};
+    se_aes_key_set(KS_AES_CTR, kek, SE_KEY_128_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
+
+    minerva_periodic_training();
+
+    u32 xor_pad[0x20 / 4] = {0};
+    se_aes_key_set(KS_AES_CTR, nfc_keyblob.ctr_key, SE_KEY_128_SIZE);
+    se_aes_crypt_ctr(KS_AES_CTR, xor_pad, sizeof(xor_pad), xor_pad, sizeof(xor_pad), nfc_keyblob.ctr_iv);
+
+    minerva_periodic_training();
+
+    memcpy(nfc_save_keys[0].hmac_key, nfc_keyblob.hmac_key, sizeof(nfc_keyblob.hmac_key));
+    memcpy(nfc_save_keys[0].phrase, nfc_keyblob.phrase, sizeof(nfc_keyblob.phrase));
+    nfc_save_keys[0].seed_size = sizeof(nfc_keyblob.seed);
+    memcpy(nfc_save_keys[0].seed, nfc_keyblob.seed, sizeof(nfc_keyblob.seed));
+    memcpy(nfc_save_keys[0].xor_pad, xor_pad, sizeof(xor_pad));
+
+    memcpy(nfc_save_keys[1].hmac_key, nfc_keyblob.hmac_key_for_verif, sizeof(nfc_keyblob.hmac_key_for_verif));
+    memcpy(nfc_save_keys[1].phrase, nfc_keyblob.phrase_for_verif, sizeof(nfc_keyblob.phrase_for_verif));
+    nfc_save_keys[1].seed_size = sizeof(nfc_keyblob.seed_for_verif);
+    memcpy(nfc_save_keys[1].seed, nfc_keyblob.seed_for_verif, sizeof(nfc_keyblob.seed_for_verif));
+    memcpy(nfc_save_keys[1].xor_pad, xor_pad, sizeof(xor_pad));
+ }
 
 void derive_amiibo_keys() {
     minerva_change_freq(FREQ_1600);
@@ -985,53 +1005,25 @@ void derive_amiibo_keys() {
         return;
     }
 
-    decrypt_aes_key(KS_AES_ECB, keys, keys->temp_key, nfc_key_source, 0, 0);
-
-    nfc_keyblob_t __attribute__((aligned(4))) nfc_keyblob;
-    static const u8 nfc_iv[SE_KEY_128_SIZE] = {
-        0xB9, 0x1D, 0xC1, 0xCF, 0x33, 0x5F, 0xA6, 0x13, 0x2A, 0xEF, 0x90, 0x99, 0xAA, 0xCA, 0x93, 0xC8};
-    se_aes_key_set(KS_AES_CTR, keys->temp_key, SE_KEY_128_SIZE);
-    se_aes_crypt_ctr(KS_AES_CTR, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
-
-    minerva_periodic_training();
-
-    u8 xor_pad[0x20] __attribute__((aligned(4))) = {0};
-    se_aes_key_set(KS_AES_CTR, nfc_keyblob.ctr_key, SE_KEY_128_SIZE);
-    se_aes_crypt_ctr(KS_AES_CTR, xor_pad, sizeof(xor_pad), xor_pad, sizeof(xor_pad), nfc_keyblob.ctr_iv);
-
-    minerva_periodic_training();
-
     nfc_save_key_t __attribute__((aligned(4))) nfc_save_keys[2] = {0};
-    memcpy(nfc_save_keys[0].hmac_key, nfc_keyblob.hmac_key, sizeof(nfc_keyblob.hmac_key));
-    memcpy(nfc_save_keys[0].phrase, nfc_keyblob.phrase, sizeof(nfc_keyblob.phrase));
-    nfc_save_keys[0].seed_size = sizeof(nfc_keyblob.seed);
-    memcpy(nfc_save_keys[0].seed, nfc_keyblob.seed, sizeof(nfc_keyblob.seed));
-    memcpy(nfc_save_keys[0].xor_pad, xor_pad, sizeof(xor_pad));
 
-    memcpy(nfc_save_keys[1].hmac_key, nfc_keyblob.hmac_key_for_verif, sizeof(nfc_keyblob.hmac_key_for_verif));
-    memcpy(nfc_save_keys[1].phrase, nfc_keyblob.phrase_for_verif, sizeof(nfc_keyblob.phrase_for_verif));
-    nfc_save_keys[1].seed_size = sizeof(nfc_keyblob.seed_for_verif);
-    memcpy(nfc_save_keys[1].seed, nfc_keyblob.seed_for_verif, sizeof(nfc_keyblob.seed_for_verif));
-    memcpy(nfc_save_keys[1].xor_pad, xor_pad, sizeof(xor_pad));
+    _decrypt_amiibo_keys(keys, encrypted_keys, nfc_save_keys);
 
     minerva_periodic_training();
 
-    u8 hash[0x20] = {0};
+    u32 hash[SE_SHA_256_SIZE / 4] = {0};
     se_calc_sha256_oneshot(hash, &nfc_save_keys[0], sizeof(nfc_save_keys));
 
     if (memcmp(hash, is_dev ? nfc_blob_hash_dev : nfc_blob_hash, sizeof(hash)) != 0) {
         EPRINTF("Amiibo hash mismatch. Skipping save.");
-        minerva_change_freq(FREQ_800);
-        btn_wait();
-        return;
-    }
-
-    const char *keyfile_path = is_dev ? "sd:/switch/key_dev.bin" : "sd:/switch/key_retail.bin";
-
-    if (!sd_save_to_file(&nfc_save_keys[0], sizeof(nfc_save_keys), keyfile_path)) {
-        gfx_printf("%kWrote Amiibo keys to\n %s\n", colors[(color_idx++) % 6], keyfile_path);
     } else {
-        EPRINTF("Unable to save Amiibo keys to SD.");
+        const char *keyfile_path = is_dev ? "sd:/switch/key_dev.bin" : "sd:/switch/key_retail.bin";
+
+        if (!sd_save_to_file(&nfc_save_keys[0], sizeof(nfc_save_keys), keyfile_path)) {
+            gfx_printf("%kWrote Amiibo keys to\n %s\n", colors[(color_idx++) % 6], keyfile_path);
+        } else {
+            EPRINTF("Unable to save Amiibo keys to SD.");
+        }
     }
 
     gfx_printf("\n%kPress a button to return to the menu.", colors[(color_idx++) % 6]);

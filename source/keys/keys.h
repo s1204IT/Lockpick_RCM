@@ -25,7 +25,7 @@
 
 // only tickets of type Rsa2048Sha256 are expected
 typedef struct {
-    u32 signature_type;   // always 0x10004
+    u32 signature_type; // always 0x10004
     u8 signature[SE_RSA2048_DIGEST_SIZE];
     u8 sig_padding[0x3C];
     char issuer[0x40];

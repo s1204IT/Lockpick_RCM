@@ -127,10 +127,12 @@ static const u8 secure_data_tweaks[1][0x10] __attribute__((aligned(4))) = {
 #define SSL_RSA_KEY_SIZE         (SE_AES_IV_SIZE + SE_RSA2048_DIGEST_SIZE)
 #define ETICKET_RSA_KEYPAIR_SIZE (SE_AES_IV_SIZE + SE_RSA2048_DIGEST_SIZE * 2 + SE_KEY_128_SIZE)
 
+#define TICKET_SIG_TYPE_RSA2048_SHA256 0x10004
+
 typedef struct {
     u8 private_exponent[SE_RSA2048_DIGEST_SIZE];
     u8 modulus[SE_RSA2048_DIGEST_SIZE];
-    u8 public_exponent[4];
+    u32 public_exponent;
     u8 reserved[0xC];
 } rsa_keypair_t;
 
@@ -199,8 +201,11 @@ typedef enum {
 #define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
 #define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
 
+bool check_keyslot_access();
+
 bool test_rsa_keypair(const void *public_exponent, const void *private_exponent, const void *modulus);
 bool test_eticket_rsa_keypair(const rsa_keypair_t *keypair);
+u32 rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label_digest_size, u8 *buf, u32 buf_size);
 
 // Equivalent to spl::GenerateAesKek
 void generate_aes_kek(u32 ks, key_storage_t *keys, void *out_kek, const void *kek_source, u32 generation, u32 option);

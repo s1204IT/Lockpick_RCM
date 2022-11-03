@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2022 shchmue
+ * Copyright (c) 2018 Atmosphère-NX
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -27,6 +28,15 @@
 
 extern hekate_config h_cfg;
 
+bool check_keyslot_access() {
+    u8 test_data[SE_KEY_128_SIZE] = {0};
+    const u8 test_ciphertext[SE_KEY_128_SIZE] = {0};
+    se_aes_key_set(KS_AES_ECB, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c\x0d\x0e\x0f", SE_KEY_128_SIZE);
+    se_aes_crypt_block_ecb(KS_AES_ECB, DECRYPT, test_data, test_ciphertext);
+
+    return memcmp(test_data, "\x7b\x1d\x29\xa1\x6c\xf8\xcc\xab\x84\xf0\xb8\xa5\x98\xe4\x2f\xa6", SE_KEY_128_SIZE) == 0;
+}
+
 bool test_rsa_keypair(const void *public_exponent, const void *private_exponent, const void *modulus) {
     u32 plaintext[SE_RSA2048_DIGEST_SIZE / 4] = {0},
         ciphertext[SE_RSA2048_DIGEST_SIZE / 4] = {0},
@@ -46,11 +56,80 @@ bool test_rsa_keypair(const void *public_exponent, const void *private_exponent,
 bool test_eticket_rsa_keypair(const rsa_keypair_t *keypair) {
     // Unlike the SSL RSA key, we don't need to check the gmac - we can just verify the public exponent
     // and test the keypair since we have the modulus
-    if ((read_be_u32(keypair->public_exponent, 0) != RSA_PUBLIC_EXPONENT) ||
-        (!test_rsa_keypair(keypair->public_exponent, keypair->private_exponent, keypair->modulus))) {
+    if ((byte_swap_32(keypair->public_exponent) != RSA_PUBLIC_EXPONENT) ||
+        (!test_rsa_keypair(&keypair->public_exponent, keypair->private_exponent, keypair->modulus))
+    ) {
         return false;
     }
     return true;
+}
+
+// _mgf1_xor() and rsa_oaep_decode were derived from Atmosphère
+static void _mgf1_xor(void *masked, u32 masked_size, const void *seed, u32 seed_size)
+{
+    u8 cur_hash[0x20] __attribute__((aligned(4)));
+    u8 hash_buf[0xe4] __attribute__((aligned(4)));
+
+    u32 hash_buf_size = seed_size + 4;
+    memcpy(hash_buf, seed, seed_size);
+    u32 round_num = 0;
+
+    u8 *p_out = (u8 *)masked;
+
+    while (masked_size) {
+        u32 cur_size = MIN(masked_size, 0x20);
+
+        for (u32 i = 0; i < 4; i++)
+            hash_buf[seed_size + 3 - i] = (round_num >> (8 * i)) & 0xff;
+        round_num++;
+
+        se_calc_sha256_oneshot(cur_hash, hash_buf, hash_buf_size);
+
+        for (unsigned int i = 0; i < cur_size; i++) {
+            *p_out ^= cur_hash[i];
+            p_out++;
+        }
+
+        masked_size -= cur_size;
+    }
+}
+
+u32 rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label_digest_size, u8 *buf, u32 buf_size) {
+    if (dst_size <= 0 || buf_size < 0x43 || label_digest_size != 0x20)
+        return 0;
+
+    bool is_valid = buf[0] == 0;
+
+    u32 db_len = buf_size - 0x21;
+    u8 *seed = buf + 1;
+    u8 *db = seed + 0x20;
+    _mgf1_xor(seed, 0x20, db, db_len);
+    _mgf1_xor(db, db_len, seed, 0x20);
+
+    is_valid &= memcmp(label_digest, db, 0x20) ? 0 : 1;
+
+    db += 0x20;
+    db_len -= 0x20;
+
+    int msg_ofs = 0;
+    int looking_for_one = 1;
+    int invalid_db_padding = 0;
+    int is_zero;
+    int is_one;
+    for (int i = 0; i < db_len; ) {
+        is_zero = (db[i] == 0);
+        is_one  = (db[i] == 1);
+        msg_ofs += (looking_for_one & is_one) * (++i);
+        looking_for_one &= ~is_one;
+        invalid_db_padding |= (looking_for_one & ~is_zero);
+    }
+
+    is_valid &= (invalid_db_padding == 0);
+
+    const u32 msg_size = MIN(dst_size, is_valid * (db_len - msg_ofs));
+    memcpy(dst, db + msg_ofs, msg_size);
+
+    return msg_size;
 }
 
 // Equivalent to spl::GenerateAesKek
