@@ -17,16 +17,40 @@
 
 #include "crypto.h"
 
+#include "../../keygen/tsec_keygen.h"
+
 #include "../config.h"
 #include "../hos/hos.h"
 #include <sec/se.h>
 #include <sec/se_t210.h>
+#include <sec/tsec.h>
 #include <soc/fuse.h>
 #include <utils/util.h>
 
 #include <string.h>
 
 extern hekate_config h_cfg;
+
+int key_exists(const void *data) {
+    return memcmp(data, "\x00\x00\x00\x00\x00\x00\x00\x00", 8) != 0;
+}
+
+int run_ams_keygen(key_storage_t *keys) {
+    tsec_ctxt_t tsec_ctxt;
+    tsec_ctxt.fw = tsec_keygen;
+    tsec_ctxt.size = sizeof(tsec_keygen);
+    tsec_ctxt.type = TSEC_FW_TYPE_NEW;
+
+    u32 retries = 0;
+    while (tsec_query(keys->temp_key, &tsec_ctxt) < 0) {
+        retries++;
+        if (retries > 15) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
 
 bool check_keyslot_access() {
     u8 test_data[SE_KEY_128_SIZE] = {0};
@@ -53,20 +77,8 @@ bool test_rsa_keypair(const void *public_exponent, const void *private_exponent,
     return memcmp(plaintext, work, SE_RSA2048_DIGEST_SIZE) == 0;
 }
 
-bool test_eticket_rsa_keypair(const rsa_keypair_t *keypair) {
-    // Unlike the SSL RSA key, we don't need to check the gmac - we can just verify the public exponent
-    // and test the keypair since we have the modulus
-    if ((byte_swap_32(keypair->public_exponent) != RSA_PUBLIC_EXPONENT) ||
-        (!test_rsa_keypair(&keypair->public_exponent, keypair->private_exponent, keypair->modulus))
-    ) {
-        return false;
-    }
-    return true;
-}
-
 // _mgf1_xor() and rsa_oaep_decode were derived from Atmosphère
-static void _mgf1_xor(void *masked, u32 masked_size, const void *seed, u32 seed_size)
-{
+static void _mgf1_xor(void *masked, u32 masked_size, const void *seed, u32 seed_size) {
     u8 cur_hash[0x20] __attribute__((aligned(4)));
     u8 hash_buf[0xe4] __attribute__((aligned(4)));
 
@@ -132,6 +144,12 @@ u32 rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label
     return msg_size;
 }
 
+void derive_rsa_kek(u32 ks, key_storage_t *keys, void *out_rsa_kek, const void *kekek_source, const void *kek_source, u32 generation, u32 option) {
+    u32 access_key[SE_KEY_128_SIZE / 4] = {0};
+    generate_aes_kek(ks, keys, access_key, kekek_source, generation, option);
+    get_device_unique_data_key(ks, out_rsa_kek, access_key, kek_source);
+}
+
 // Equivalent to spl::GenerateAesKek
 void generate_aes_kek(u32 ks, key_storage_t *keys, void *out_kek, const void *kek_source, u32 generation, u32 option) {
     bool device_unique = GET_IS_DEVICE_UNIQUE(option);
@@ -162,7 +180,7 @@ void load_aes_key(u32 ks, void *out_key, const void *access_key, const void *key
 
 // Equivalent to spl::GenerateAesKey
 void generate_aes_key(u32 ks, key_storage_t *keys, void *out_key, u32 key_size, const void *access_key, const void *key_source) {
-    void *aes_key = keys->temp_key;
+    u32 aes_key[SE_KEY_128_SIZE / 4] = {0};
     load_aes_key(ks, aes_key, access_key, aes_key_generation_source);
     se_aes_key_set(ks, aes_key, SE_KEY_128_SIZE);
     se_aes_crypt_ecb(ks, DECRYPT, out_key, key_size, key_source, key_size);
@@ -175,7 +193,7 @@ void get_device_unique_data_key(u32 ks, void *out_key, const void *access_key, c
 
 // Equivalent to spl::DecryptAesKey.
 void decrypt_aes_key(u32 ks, key_storage_t *keys, void *out_key, const void *key_source, u32 generation, u32 option) {
-    void *access_key = keys->temp_key;
+    u32 access_key[SE_KEY_128_SIZE / 4] = {0};
     generate_aes_kek(ks, keys, access_key, aes_key_decryption_source, generation, option);
     generate_aes_key(ks, keys, out_key, SE_KEY_128_SIZE, access_key, key_source);
 }

@@ -63,27 +63,6 @@ typedef struct {
 } titlekey_buffer_t;
 
 typedef struct {
-    char phrase[0xE];
-    u8 seed[0xE];
-    u8 hmac_key[0x10];
-    char phrase_for_verif[0xE];
-    u8 seed_for_verif[0x10];
-    u8 hmac_key_for_verif[0x10];
-    u8 ctr_key[0x10];
-    u8 ctr_iv[0x10];
-    u8 pad[6];
-} nfc_keyblob_t;
-
-typedef struct {
-    u8 hmac_key[0x10];
-    char phrase[0xE];
-    u8 rsvd;
-    u8 seed_size;
-    u8 seed[0x10];
-    u8 xor_pad[0x20];
-} nfc_save_key_t;
-
-typedef struct {
     char rights_id[0x20];
     char equals[3];
     char titlekey[0x20];

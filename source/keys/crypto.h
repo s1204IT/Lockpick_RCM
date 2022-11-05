@@ -17,9 +17,13 @@
 #ifndef _CRYPTO_H_
 #define _CRYPTO_H_
 
+#include "es_types.h"
+
 #include "../hos/hos.h"
 #include <sec/se_t210.h>
 #include <utils/types.h>
+
+#include <string.h>
 
 static const u8 aes_kek_generation_source[0x10] __attribute__((aligned(4))) = {
     0x4D, 0x87, 0x09, 0x86, 0xC4, 0x5D, 0x20, 0x72, 0x2F, 0xBA, 0x10, 0x53, 0xDA, 0x92, 0xE8, 0xA9};
@@ -130,13 +134,6 @@ static const u8 secure_data_tweaks[1][0x10] __attribute__((aligned(4))) = {
 #define TICKET_SIG_TYPE_RSA2048_SHA256 0x10004
 
 typedef struct {
-    u8 private_exponent[SE_RSA2048_DIGEST_SIZE];
-    u8 modulus[SE_RSA2048_DIGEST_SIZE];
-    u32 public_exponent;
-    u8 reserved[0xC];
-} rsa_keypair_t;
-
-typedef struct {
     u8 master_kek[SE_KEY_128_SIZE];
     u8 data[0x70];
     u8 package1_key[SE_KEY_128_SIZE];
@@ -179,7 +176,7 @@ typedef struct {
         tsec_root_key[SE_KEY_128_SIZE];
     u32 sbk[4];
     keyblob_t keyblob[KB_FIRMWARE_VERSION_600 + 1];
-    rsa_keypair_t eticket_rsa_keypair;
+    eticket_rsa_keypair_t eticket_rsa_keypair;
 } key_storage_t;
 
 typedef enum {
@@ -201,11 +198,16 @@ typedef enum {
 #define GET_SEAL_KEY_INDEX(x) (((x) >> 5) & 7)
 #define GET_IS_DEVICE_UNIQUE(x) ((x) & 1)
 
+int key_exists(const void *data);
+
+int run_ams_keygen(key_storage_t *keys);
+
 bool check_keyslot_access();
 
 bool test_rsa_keypair(const void *public_exponent, const void *private_exponent, const void *modulus);
-bool test_eticket_rsa_keypair(const rsa_keypair_t *keypair);
 u32 rsa_oaep_decode(void *dst, u32 dst_size, const void *label_digest, u32 label_digest_size, u8 *buf, u32 buf_size);
+
+void derive_rsa_kek(u32 ks, key_storage_t *keys, void *out_rsa_kek, const void *kekek_source, const void *kek_source, u32 generation, u32 option);
 
 // Equivalent to spl::GenerateAesKek
 void generate_aes_kek(u32 ks, key_storage_t *keys, void *out_kek, const void *kek_source, u32 generation, u32 option);
