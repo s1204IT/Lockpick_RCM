@@ -120,33 +120,28 @@ static void _derive_master_keys_from_latest_key(key_storage_t *keys, bool is_dev
 static void _derive_keyblob_keys(key_storage_t *keys) {
     minerva_periodic_training();
 
-    u8 *keyblob_block = (u8 *)calloc(KB_FIRMWARE_VERSION_600 + 1, NX_EMMC_BLOCKSIZE);
-    u32 keyblob_mac[SE_KEY_128_SIZE / 4] = {0};
+    encrypted_keyblob_t *keyblob_buffer = (encrypted_keyblob_t *)calloc(KB_FIRMWARE_VERSION_600 + 1, sizeof(encrypted_keyblob_t));
+    u32 keyblob_mac[SE_AES_CMAC_DIGEST_SIZE / 4] = {0};
     bool have_keyblobs = true;
 
-    if (FUSE(FUSE_PRIVATE_KEY0) == 0xFFFFFFFF) {
-        u8 *aes_keys = (u8 *)calloc(1, SZ_4K);
-        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, SE_KEY_128_SIZE);
-        memcpy(keys->sbk, aes_keys + 14 * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
-        free(aes_keys);
-    } else {
-        keys->sbk[0] = FUSE(FUSE_PRIVATE_KEY0);
-        keys->sbk[1] = FUSE(FUSE_PRIVATE_KEY1);
-        keys->sbk[2] = FUSE(FUSE_PRIVATE_KEY2);
-        keys->sbk[3] = FUSE(FUSE_PRIVATE_KEY3);
+    if (FUSE(FUSE_PRIVATE_KEY0) != 0xFFFFFFFF) {
+        keys->secure_boot_key[0] = FUSE(FUSE_PRIVATE_KEY0);
+        keys->secure_boot_key[1] = FUSE(FUSE_PRIVATE_KEY1);
+        keys->secure_boot_key[2] = FUSE(FUSE_PRIVATE_KEY2);
+        keys->secure_boot_key[3] = FUSE(FUSE_PRIVATE_KEY3);
     }
 
     if (!emmc_storage.initialized) {
         have_keyblobs = false;
-    } else if (!emummc_storage_read(KEYBLOB_OFFSET / NX_EMMC_BLOCKSIZE, KB_FIRMWARE_VERSION_600 + 1, keyblob_block)) {
+    } else if (!emummc_storage_read(KEYBLOB_OFFSET / NX_EMMC_BLOCKSIZE, KB_FIRMWARE_VERSION_600 + 1, keyblob_buffer)) {
         EPRINTF("Unable to read keyblobs.");
         have_keyblobs = false;
     } else {
         have_keyblobs = true;
     }
 
-    encrypted_keyblob_t *current_keyblob = (encrypted_keyblob_t *)keyblob_block;
-    for (u32 i = 0; i <= KB_FIRMWARE_VERSION_600; i++, current_keyblob++) {
+    encrypted_keyblob_t *current_keyblob = keyblob_buffer;
+    for (u32 i = 0; i < ARRAY_SIZE(keyblob_key_sources); i++, current_keyblob++) {
         minerva_periodic_training();
         se_aes_crypt_block_ecb(KS_TSEC, DECRYPT, keys->keyblob_key[i], keyblob_key_sources[i]);
         se_aes_crypt_block_ecb(KS_SECURE_BOOT, DECRYPT, keys->keyblob_key[i], keys->keyblob_key[i]);
@@ -178,7 +173,7 @@ static void _derive_keyblob_keys(key_storage_t *keys) {
             load_aes_key(KS_AES_ECB, keys->master_key[i], keys->master_kek[i], master_key_source);
         }
     }
-    free(keyblob_block);
+    free(keyblob_buffer);
 }
 
 static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_keys, bool is_dev) {
@@ -188,7 +183,7 @@ static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_key
         _derive_master_keys_mariko(keys, is_dev);
         _derive_master_keys_from_latest_key(keys, is_dev);
     } else {
-        if (run_ams_keygen(keys)) {
+        if (run_ams_keygen()) {
             EPRINTF("Failed to run keygen.");
             return;
         }
@@ -196,8 +191,13 @@ static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_key
         u8 *aes_keys = (u8 *)calloc(1, SZ_4K);
         se_get_aes_keys(aes_keys + SZ_2K, aes_keys, SE_KEY_128_SIZE);
         memcpy(&dev_keys->tsec_root_key,  aes_keys + KS_TSEC_ROOT_DEV * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
-        memcpy(keys->tsec_key,            aes_keys + KS_TSEC          * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        memcpy(&dev_keys->tsec_key,       aes_keys + KS_TSEC          * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        memcpy(&prod_keys->tsec_key,      aes_keys + KS_TSEC          * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
         memcpy(&prod_keys->tsec_root_key, aes_keys + KS_TSEC_ROOT     * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        if (FUSE(FUSE_PRIVATE_KEY0) != 0xFFFFFFFF) {
+            memcpy(&dev_keys->secure_boot_key,  aes_keys + KS_SECURE_BOOT * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+            memcpy(&prod_keys->secure_boot_key, aes_keys + KS_SECURE_BOOT * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        }
         free(aes_keys);
 
         _derive_master_keys_from_latest_key(prod_keys, false);
@@ -410,7 +410,7 @@ static bool _derive_titlekeys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
     return true;
 }
 
-static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
+static void _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
     // Set BIS keys.
     // PRODINFO/PRODINFOF
     se_aes_key_set(KS_BIS_00_CRYPT, keys->bis_key[0] + 0x00, SE_KEY_128_SIZE);
@@ -424,16 +424,14 @@ static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
 
     if (!emummc_storage_set_mmc_partition(EMMC_GPP)) {
         EPRINTF("Unable to set partition.");
-        return false;
+        return;
     }
 
-    bool res = decrypt_ssl_rsa_key(keys, titlekey_buffer);
-    if (!res) {
+    if (!decrypt_ssl_rsa_key(keys, titlekey_buffer)) {
         EPRINTF("Unable to derive SSL key.");
     }
 
-    res = decrypt_eticket_rsa_key(keys, titlekey_buffer, is_dev);
-    if (!res) {
+    if (!decrypt_eticket_rsa_key(keys, titlekey_buffer, is_dev)) {
         EPRINTF("Unable to derive ETicket key.");
     }
 
@@ -445,7 +443,7 @@ static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
     if (!system_part) {
         EPRINTF("Unable to locate System partition.");
         nx_emmc_gpt_free(&gpt);
-        return false;
+        return;
     }
 
     nx_emmc_bis_init(system_part);
@@ -453,7 +451,7 @@ static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
     if (f_mount(&emmc_fs, "bis:", 1)) {
         EPRINTF("Unable to mount system partition.");
         nx_emmc_gpt_free(&gpt);
-        return false;
+        return;
     }
 
     if (!sd_mount()) {
@@ -462,15 +460,12 @@ static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
         EPRINTF("Unable to get SD seed.");
     }
 
-    res = _derive_titlekeys(keys, titlekey_buffer, is_dev);
-    if (!res) {
+    if (!_derive_titlekeys(keys, titlekey_buffer, is_dev)) {
         EPRINTF("Unable to derive titlekeys.");
     }
 
     f_mount(NULL, "bis:", 1);
     nx_emmc_gpt_free(&gpt);
-
-    return res;
 }
 
 // The security engine supports partial key override for locked keyslots
@@ -611,9 +606,9 @@ static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_bu
     SAVE_KEY_FAMILY_VAR(keyblob_mac_key, keys->keyblob_mac_key, 0);
     SAVE_KEY(keyblob_mac_key_source);
     if (is_dev) {
-        SAVE_KEY_FAMILY_VAR(mariko_master_kek_source, mariko_master_kek_sources_dev, 5);
+        SAVE_KEY_FAMILY_VAR(mariko_master_kek_source, mariko_master_kek_sources_dev, KB_FIRMWARE_VERSION_600);
     } else {
-        SAVE_KEY_FAMILY_VAR(mariko_master_kek_source, mariko_master_kek_sources, 5);
+        SAVE_KEY_FAMILY_VAR(mariko_master_kek_source, mariko_master_kek_sources, KB_FIRMWARE_VERSION_600);
     }
     SAVE_KEY_FAMILY_VAR(master_kek, keys->master_kek, 0);
     SAVE_KEY_FAMILY_VAR(master_kek_source, master_kek_sources, KB_FIRMWARE_VERSION_620);
@@ -634,7 +629,7 @@ static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_bu
     SAVE_KEY(sd_card_nca_key_source);
     SAVE_KEY(sd_card_save_key_source);
     SAVE_KEY_VAR(sd_seed, keys->sd_seed);
-    SAVE_KEY_VAR(secure_boot_key, keys->sbk);
+    SAVE_KEY_VAR(secure_boot_key, keys->secure_boot_key);
     SAVE_KEY_VAR(ssl_rsa_kek, keys->ssl_rsa_kek);
     SAVE_KEY_VAR(ssl_rsa_kek_personalized, keys->ssl_rsa_kek_personalized);
     if (is_dev) {

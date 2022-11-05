@@ -35,14 +35,15 @@ int key_exists(const void *data) {
     return memcmp(data, "\x00\x00\x00\x00\x00\x00\x00\x00", 8) != 0;
 }
 
-int run_ams_keygen(key_storage_t *keys) {
+int run_ams_keygen() {
     tsec_ctxt_t tsec_ctxt;
     tsec_ctxt.fw = tsec_keygen;
     tsec_ctxt.size = sizeof(tsec_keygen);
     tsec_ctxt.type = TSEC_FW_TYPE_NEW;
 
     u32 retries = 0;
-    while (tsec_query(keys->temp_key, &tsec_ctxt) < 0) {
+    u32 temp_key[SE_KEY_128_SIZE / 4];
+    while (tsec_query(temp_key, &tsec_ctxt) < 0) {
         retries++;
         if (retries > 15) {
             return -1;

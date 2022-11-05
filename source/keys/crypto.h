@@ -21,6 +21,7 @@
 
 #include "../hos/hos.h"
 #include <sec/se_t210.h>
+#include "../storage/nx_emmc.h"
 #include <utils/types.h>
 
 #include <string.h>
@@ -136,17 +137,20 @@ static const u8 secure_data_tweaks[1][0x10] __attribute__((aligned(4))) = {
 
 #define RSA_PUBLIC_EXPONENT 65537
 
+#define KEYBLOB_UNK_DATA_SIZE 0x70
+#define KEYBLOB_UNUSED_SIZE (NX_EMMC_BLOCKSIZE - SE_AES_CMAC_DIGEST_SIZE - SE_AES_IV_SIZE - sizeof(keyblob_t))
+
 typedef struct {
     u8 master_kek[SE_KEY_128_SIZE];
-    u8 data[0x70];
+    u8 data[KEYBLOB_UNK_DATA_SIZE];
     u8 package1_key[SE_KEY_128_SIZE];
 } keyblob_t;
 
 typedef struct {
-    u8 cmac[0x10];
-    u8 iv[0x10];
+    u8 cmac[SE_AES_CMAC_DIGEST_SIZE];
+    u8 iv[SE_AES_IV_SIZE];
     keyblob_t key_data;
-    u8 unused[0x150];
+    u8 unused[KEYBLOB_UNUSED_SIZE];
 } encrypted_keyblob_t;
 
 typedef struct {
@@ -177,7 +181,7 @@ typedef struct {
         titlekek[KB_FIRMWARE_VERSION_MAX + 1][SE_KEY_128_SIZE],
         tsec_key[SE_KEY_128_SIZE],
         tsec_root_key[SE_KEY_128_SIZE];
-    u32 sbk[4];
+    u32 secure_boot_key[4];
     keyblob_t keyblob[KB_FIRMWARE_VERSION_600 + 1];
     eticket_rsa_keypair_t eticket_rsa_keypair;
 } key_storage_t;
@@ -203,7 +207,7 @@ typedef enum {
 
 int key_exists(const void *data);
 
-int run_ams_keygen(key_storage_t *keys);
+int run_ams_keygen();
 
 bool check_keyslot_access();
 
