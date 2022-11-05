@@ -27,7 +27,7 @@ void nfc_decrypt_amiibo_keys(key_storage_t *keys, nfc_save_key_t out_nfc_save_ke
     decrypt_aes_key(KS_AES_ECB, keys, kek, nfc_key_source, 0, 0);
 
     nfc_keyblob_t __attribute__((aligned(4))) nfc_keyblob;
-    static const u8 nfc_iv[SE_KEY_128_SIZE] = {
+    static const u8 nfc_iv[SE_AES_IV_SIZE] = {
         0xB9, 0x1D, 0xC1, 0xCF, 0x33, 0x5F, 0xA6, 0x13, 0x2A, 0xEF, 0x90, 0x99, 0xAA, 0xCA, 0x93, 0xC8};
     se_aes_key_set(KS_AES_CTR, kek, SE_KEY_128_SIZE);
     se_aes_crypt_ctr(KS_AES_CTR, &nfc_keyblob, sizeof(nfc_keyblob), encrypted_keys, sizeof(nfc_keyblob), &nfc_iv);
