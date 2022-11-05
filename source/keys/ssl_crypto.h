@@ -21,6 +21,8 @@
 
 #include <utils/types.h>
 
+#define SSL_RSA_KEY_SIZE (SE_AES_IV_SIZE + SE_RSA2048_DIGEST_SIZE)
+
 static const u8 ssl_rsa_kekek_source[0x10] __attribute__((aligned(4))) = {
     0x7F, 0x5B, 0xB0, 0x84, 0x7B, 0x25, 0xAA, 0x67, 0xFA, 0xC8, 0x4B, 0xE2, 0x3D, 0x7B, 0x69, 0x03};
 static const u8 ssl_rsa_kek_source[0x10] __attribute__((aligned(4))) = {
@@ -37,5 +39,7 @@ static const u8 ssl_client_cert_key_source[0x10] __attribute__((aligned(4))) = {
 void ssl_derive_rsa_kek_device_unique(key_storage_t *keys, void *out_rsa_kek, u32 generation);
 void ssl_derive_rsa_kek_legacy(key_storage_t *keys, void *out_rsa_kek);
 void ssl_derive_rsa_kek_original(key_storage_t *keys, void *out_rsa_kek, bool is_dev);
+
+bool decrypt_ssl_rsa_key(key_storage_t *keys, void *buffer);
 
 #endif

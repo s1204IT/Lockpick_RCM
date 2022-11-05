@@ -16,10 +16,8 @@
 
 #include "keys.h"
 
-#include "cal0_read.h"
 #include "es_crypto.h"
 #include "fs_crypto.h"
-#include "gmac.h"
 #include "nfc_crypto.h"
 #include "ssl_crypto.h"
 
@@ -127,7 +125,7 @@ static void _derive_keyblob_keys(key_storage_t *keys) {
     bool have_keyblobs = true;
 
     if (FUSE(FUSE_PRIVATE_KEY0) == 0xFFFFFFFF) {
-        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
+        u8 *aes_keys = (u8 *)calloc(1, SZ_4K);
         se_get_aes_keys(aes_keys + SZ_2K, aes_keys, SE_KEY_128_SIZE);
         memcpy(keys->sbk, aes_keys + 14 * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
         free(aes_keys);
@@ -183,22 +181,47 @@ static void _derive_keyblob_keys(key_storage_t *keys) {
     free(keyblob_block);
 }
 
+static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_keys, bool is_dev) {
+    key_storage_t *keys = is_dev ? dev_keys : prod_keys;
+
+    if (h_cfg.t210b01) {
+        _derive_master_keys_mariko(keys, is_dev);
+        _derive_master_keys_from_latest_key(keys, is_dev);
+    } else {
+        if (run_ams_keygen(keys)) {
+            EPRINTF("Failed to run keygen.");
+            return;
+        }
+
+        u8 *aes_keys = (u8 *)calloc(1, SZ_4K);
+        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, SE_KEY_128_SIZE);
+        memcpy(&dev_keys->tsec_root_key,  aes_keys + KS_TSEC_ROOT_DEV * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        memcpy(keys->tsec_key,            aes_keys + KS_TSEC          * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        memcpy(&prod_keys->tsec_root_key, aes_keys + KS_TSEC_ROOT     * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
+        free(aes_keys);
+
+        _derive_master_keys_from_latest_key(prod_keys, false);
+        _derive_master_keys_from_latest_key(dev_keys, true);
+        _derive_keyblob_keys(keys);
+    }
+}
+
 static void _derive_bis_keys(key_storage_t *keys) {
     minerva_periodic_training();
     u32 generation = fuse_read_odm_keygen_rev();
     fs_derive_bis_keys(keys, keys->bis_key, generation);
 }
 
-static void _derive_misc_keys(key_storage_t *keys, bool is_dev) {
+static void _derive_misc_keys(key_storage_t *keys) {
     minerva_periodic_training();
     fs_derive_save_mac_key(keys, keys->save_mac_key);
-    es_derive_rsa_kek_original(keys, keys->eticket_rsa_kek, is_dev);
-    ssl_derive_rsa_kek_original(keys, keys->ssl_rsa_kek, is_dev);
 }
 
-static void _derive_non_unique_keys(key_storage_t *keys) {
+static void _derive_non_unique_keys(key_storage_t *keys, bool is_dev) {
     minerva_periodic_training();
     fs_derive_header_key(keys, keys->header_key);
+    es_derive_rsa_kek_original(keys, keys->eticket_rsa_kek, is_dev);
+    ssl_derive_rsa_kek_original(keys, keys->ssl_rsa_kek, is_dev);
 
     for (u32 generation = 0; generation < ARRAY_SIZE(keys->master_key); generation++) {
         minerva_periodic_training();
@@ -221,34 +244,6 @@ static bool _count_ticket_records(u32 buf_size, titlekey_buffer_t *titlekey_buff
         (*tkey_count)++;
     }
     return false;
-}
-
-static void _decode_tickets(u32 buf_size, titlekey_buffer_t *titlekey_buffer, u32 remaining, u32 total, u32 x, u32 y, u32 *pct, u32 *last_pct, bool is_personalized) {
-    ticket_t *curr_ticket = (ticket_t *)titlekey_buffer->read_buffer;
-    for (u32 i = 0; i < MIN(buf_size / sizeof(ticket_t), remaining) * sizeof(ticket_t) && curr_ticket->signature_type != 0; i += sizeof(ticket_t), curr_ticket++) {
-        minerva_periodic_training();
-        *pct = (total - remaining) * 100 / total;
-        if (*pct > *last_pct && *pct <= 100) {
-            *last_pct = *pct;
-            tui_pbar(x, y, *pct, COLOR_GREEN, 0xFF155500);
-        }
-
-        // This is in case an encrypted volatile ticket is left behind
-        if (curr_ticket->signature_type != TICKET_SIG_TYPE_RSA2048_SHA256)
-            continue;
-
-        u8 *curr_titlekey = curr_ticket->titlekey_block;
-        const u32 block_size = SE_RSA2048_DIGEST_SIZE;
-        const u32 titlekey_size = sizeof(titlekey_buffer->titlekeys[0]);
-        if (is_personalized) {
-            se_rsa_exp_mod(0, curr_titlekey, block_size, curr_titlekey, block_size);
-            if (rsa_oaep_decode(curr_titlekey, titlekey_size, null_hash, sizeof(null_hash), curr_titlekey, block_size) != titlekey_size)
-                continue;
-        }
-        memcpy(titlekey_buffer->rights_ids[_titlekey_count], curr_ticket->rights_id, sizeof(titlekey_buffer->rights_ids[0]));
-        memcpy(titlekey_buffer->titlekeys[_titlekey_count], curr_titlekey, titlekey_size);
-        _titlekey_count++;
-    }
 }
 
 static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, titlekey_buffer_t *titlekey_buffer, eticket_rsa_keypair_t *rsa_keypair) {
@@ -328,7 +323,7 @@ static bool _get_titlekeys_from_save(u32 buf_size, const u8 *save_mac_key, title
         if (!save_data_file_read(&ticket_file, &br, offset, titlekey_buffer->read_buffer, buf_size) || titlekey_buffer->read_buffer[0] == 0 || br != buf_size)
             break;
         offset += br;
-        _decode_tickets(buf_size, titlekey_buffer, remaining, file_tkey_count, save_x, save_y, &pct, &last_pct, is_personalized);
+        es_decode_tickets(buf_size, titlekey_buffer, remaining, file_tkey_count, &_titlekey_count, save_x, save_y, &pct, &last_pct, is_personalized);
         remaining -= MIN(buf_size / sizeof(ticket_t), remaining);
     }
     tui_pbar(save_x, save_y, 100, COLOR_GREEN, 0xFF155500);
@@ -382,7 +377,8 @@ static bool _derive_sd_seed(key_storage_t *keys) {
     }
 
     u8 read_buf[0x20] __attribute__((aligned(4))) = {0};
-    // Skip the two header blocks and only check the first bytes of each block - file contents are always block-aligned
+    // Skip the two header blocks and only check the first bytes of each block
+    // File contents are always block-aligned
     for (u32 i = SAVE_BLOCK_SIZE_DEFAULT * 2; i < f_size(&fp); i += SAVE_BLOCK_SIZE_DEFAULT) {
         if (f_lseek(&fp, i) || f_read(&fp, read_buf, 0x20, &read_bytes) || read_bytes != 0x20)
             break;
@@ -398,120 +394,8 @@ static bool _derive_sd_seed(key_storage_t *keys) {
     return true;
 }
 
-static bool _decrypt_ssl_rsa_key(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer) {
-    if (!cal0_read(KS_BIS_00_TWEAK, KS_BIS_00_CRYPT, titlekey_buffer->read_buffer)) {
-        return false;
-    }
-
-    nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
-    u32 generation = 0;
-    const void *encrypted_key = NULL;
-    const void *iv = NULL;
-    u32 key_size = 0;
-    void *ctr_key = NULL;
-    bool enforce_unique = true;
-
-    if (!cal0_get_ssl_rsa_key(cal0, &encrypted_key, &key_size, &iv, &generation)) {
-        return false;
-    }
-
-    if (key_size == SSL_RSA_KEY_SIZE) {
-        bool all_zero = true;
-        const u8 *key8 = (const u8 *)encrypted_key;
-        for (u32 i = SE_RSA2048_DIGEST_SIZE; i < SSL_RSA_KEY_SIZE; i++) {
-            if (key8[i] != 0) {
-                all_zero = false;
-                break;
-            }
-        }
-        if (all_zero) {
-            // Keys of this form are not encrypted
-            memcpy(keys->ssl_rsa_key, encrypted_key, SE_RSA2048_DIGEST_SIZE);
-            return true;
-        }
-
-        ssl_derive_rsa_kek_legacy(keys, keys->ssl_rsa_kek_legacy);
-        ctr_key = keys->ssl_rsa_kek_legacy;
-        enforce_unique = false;
-    } else if (generation) {
-        ssl_derive_rsa_kek_device_unique(keys, keys->ssl_rsa_kek_personalized, generation);
-        ctr_key = keys->ssl_rsa_kek_personalized;
-    } else {
-        ctr_key = keys->ssl_rsa_kek;
-    }
-
-    u32 ctr_size = enforce_unique ? key_size - 0x20 : key_size - 0x10;
-    se_aes_key_set(KS_AES_CTR, ctr_key, SE_KEY_128_SIZE);
-    se_aes_crypt_ctr(KS_AES_CTR, keys->ssl_rsa_key, ctr_size, encrypted_key, ctr_size, iv);
-
-    if (enforce_unique) {
-        u32 calc_mac[SE_KEY_128_SIZE / 4] = {0};
-        calc_gmac(KS_AES_ECB, calc_mac, keys->ssl_rsa_key, ctr_size, ctr_key, iv);
-
-        const u8 *key8 = (const u8 *)encrypted_key;
-        if (memcmp(calc_mac, &key8[ctr_size], 0x10) != 0) {
-            EPRINTF("SSL keypair has invalid GMac.");
-            memset(keys->ssl_rsa_key, 0, sizeof(keys->ssl_rsa_key));
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static bool _decrypt_eticket_rsa_key(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
-    if (!cal0_read(KS_BIS_00_TWEAK, KS_BIS_00_CRYPT, titlekey_buffer->read_buffer)) {
-        return false;
-    }
-
-    nx_emmc_cal0_t *cal0 = (nx_emmc_cal0_t *)titlekey_buffer->read_buffer;
-    u32 generation = 0;
-    const void *encrypted_key = NULL;
-    const void *iv = NULL;
-    u32 key_size = 0;
-    void *ctr_key = NULL;
-
-    if (!cal0_get_eticket_rsa_key(cal0, &encrypted_key, &key_size, &iv, &generation)) {
-        return false;
-    }
-
-    // Handle legacy case
-    if (key_size == ETICKET_RSA_KEYPAIR_SIZE) {
-        u32 temp_key[SE_KEY_128_SIZE / 4] = {0};
-        es_derive_rsa_kek_legacy(keys, temp_key);
-        ctr_key = temp_key;
-
-        se_aes_key_set(KS_AES_CTR, ctr_key, SE_KEY_128_SIZE);
-        se_aes_crypt_ctr(KS_AES_CTR, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), encrypted_key, sizeof(keys->eticket_rsa_keypair), iv);
-
-        if (test_eticket_rsa_keypair(&keys->eticket_rsa_keypair)) {
-            memcpy(keys->eticket_rsa_kek, ctr_key, sizeof(keys->eticket_rsa_kek));
-            return true;
-        }
-        // Fall through and try usual method if not applicable
-    }
-
-    if (generation) {
-        es_derive_rsa_kek_device_unique(keys, keys->eticket_rsa_kek_personalized, generation, is_dev);
-        ctr_key = keys->eticket_rsa_kek_personalized;
-    } else {
-        ctr_key = keys->eticket_rsa_kek;
-    }
-
-    se_aes_key_set(KS_AES_CTR, ctr_key, SE_KEY_128_SIZE);
-    se_aes_crypt_ctr(KS_AES_CTR, &keys->eticket_rsa_keypair, sizeof(keys->eticket_rsa_keypair), encrypted_key, sizeof(keys->eticket_rsa_keypair), iv);
-
-    if (!test_eticket_rsa_keypair(&keys->eticket_rsa_keypair)) {
-        EPRINTF("Invalid eticket keypair.");
-        memset(&keys->eticket_rsa_keypair, 0, sizeof(keys->eticket_rsa_keypair));
-        return false;
-    }
-
-    return true;
-}
-
 static bool _derive_titlekeys(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
-    if (!key_exists(keys->eticket_rsa_kek)) {
+    if (!key_exists(&keys->eticket_rsa_keypair)) {
         return false;
     }
 
@@ -543,12 +427,12 @@ static bool _derive_emmc_keys(key_storage_t *keys, titlekey_buffer_t *titlekey_b
         return false;
     }
 
-    bool res = _decrypt_ssl_rsa_key(keys, titlekey_buffer);
+    bool res = decrypt_ssl_rsa_key(keys, titlekey_buffer);
     if (!res) {
         EPRINTF("Unable to derive SSL key.");
     }
 
-    res =_decrypt_eticket_rsa_key(keys, titlekey_buffer, is_dev);
+    res = decrypt_eticket_rsa_key(keys, titlekey_buffer, is_dev);
     if (!res) {
         EPRINTF("Unable to derive ETicket key.");
     }
@@ -611,7 +495,7 @@ int save_mariko_partial_keys(u32 start, u32 count, bool append) {
     u32 pos = 0;
     u32 zeros[SE_KEY_128_SIZE / 4] = {0};
     u8 *data = malloc(4 * SE_KEY_128_SIZE);
-    char *text_buffer = calloc(1, 0x100 * count);
+    char *text_buffer = calloc(count, 0x100);
 
     for (u32 ks = start; ks < start + count; ks++) {
         // Check if key is as expected
@@ -688,14 +572,13 @@ int save_mariko_partial_keys(u32 start, u32 count, bool append) {
 }
 
 static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_buffer, bool is_dev) {
-    char *text_buffer = NULL;
     if (!sd_mount()) {
         EPRINTF("Unable to mount SD.");
         return;
     }
 
     u32 text_buffer_size = MAX(_titlekey_count * sizeof(titlekey_text_buffer_t) + 1, SZ_16K);
-    text_buffer = (char *)calloc(1, text_buffer_size);
+    char *text_buffer = (char *)calloc(1, text_buffer_size);
 
     SAVE_KEY(aes_kek_generation_source);
     SAVE_KEY(aes_key_generation_source);
@@ -765,9 +648,8 @@ static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_bu
     SAVE_KEY(titlekek_source);
     SAVE_KEY_VAR(tsec_key, keys->tsec_key);
 
-    const u32 root_key_ver = 2;
     char root_key_name[21] = "tsec_root_key_00";
-    s_printf(root_key_name + 14, "%02x", root_key_ver);
+    s_printf(root_key_name + 14, "%02x", TSEC_ROOT_KEY_VERSION);
     _save_key(root_key_name, keys->tsec_root_key, SE_KEY_128_SIZE, text_buffer);
 
     gfx_printf("\n%k  Found %d %s keys.\n\n", colors[(color_idx++) % 6], _key_count, is_dev ? "dev" : "prod");
@@ -811,31 +693,6 @@ static void _save_keys_to_sd(key_storage_t *keys, titlekey_buffer_t *titlekey_bu
     free(text_buffer);
 }
 
-static void _derive_master_keys(key_storage_t *prod_keys, key_storage_t *dev_keys, bool is_dev) {
-    key_storage_t *keys = is_dev ? dev_keys : prod_keys;
-
-    if (h_cfg.t210b01) {
-        _derive_master_keys_mariko(keys, is_dev);
-        _derive_master_keys_from_latest_key(keys, is_dev);
-    } else {
-        if (run_ams_keygen(keys)) {
-            EPRINTF("Failed to run keygen.");
-            return;
-        }
-
-        u8 *aes_keys = (u8 *)calloc(SZ_4K, 1);
-        se_get_aes_keys(aes_keys + SZ_2K, aes_keys, SE_KEY_128_SIZE);
-        memcpy(&dev_keys->tsec_root_key,  aes_keys + KS_TSEC_ROOT_DEV * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
-        memcpy(keys->tsec_key,            aes_keys + KS_TSEC          * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
-        memcpy(&prod_keys->tsec_root_key, aes_keys + KS_TSEC_ROOT     * SE_KEY_128_SIZE, SE_KEY_128_SIZE);
-        free(aes_keys);
-
-        _derive_master_keys_from_latest_key(prod_keys, false);
-        _derive_master_keys_from_latest_key(dev_keys, true);
-        _derive_keyblob_keys(keys);
-    }
-}
-
 static void _derive_keys() {
     minerva_periodic_training();
 
@@ -872,9 +729,9 @@ static void _derive_keys() {
 
     TPRINTFARGS("%kBIS keys...     ", colors[(color_idx++) % 6]);
 
-    _derive_misc_keys(keys, is_dev);
-    _derive_non_unique_keys(&prod_keys);
-    _derive_non_unique_keys(&dev_keys);
+    _derive_misc_keys(keys);
+    _derive_non_unique_keys(&prod_keys, is_dev);
+    _derive_non_unique_keys(&dev_keys, is_dev);
 
     titlekey_buffer_t *titlekey_buffer = (titlekey_buffer_t *)TITLEKEY_BUF_ADR;
 

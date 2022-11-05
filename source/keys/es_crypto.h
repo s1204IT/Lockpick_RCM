@@ -20,7 +20,12 @@
 #include "crypto.h"
 #include "es_types.h"
 
+#include <sec/se_t210.h>
 #include <utils/types.h>
+
+#define ETICKET_RSA_KEYPAIR_SIZE (SE_AES_IV_SIZE + SE_RSA2048_DIGEST_SIZE * 2 + SE_KEY_128_SIZE)
+
+#define TICKET_SIG_TYPE_RSA2048_SHA256 0x10004
 
 static const u8 eticket_rsa_kek_source[0x10] __attribute__((aligned(4))) = {
     0xDB, 0xA4, 0x51, 0x12, 0x4C, 0xA0, 0xA9, 0x83, 0x68, 0x14, 0xF5, 0xED, 0x95, 0xE3, 0x12, 0x5B};
@@ -36,5 +41,9 @@ bool test_eticket_rsa_keypair(const eticket_rsa_keypair_t *keypair);
 void es_derive_rsa_kek_device_unique(key_storage_t *keys, void *out_rsa_kek, u32 generation, bool is_dev);
 void es_derive_rsa_kek_legacy(key_storage_t *keys, void *out_rsa_kek);
 void es_derive_rsa_kek_original(key_storage_t *keys, void *out_rsa_kek, bool is_dev);
+
+bool decrypt_eticket_rsa_key(key_storage_t *keys, void *buffer, bool is_dev);
+
+void es_decode_tickets(u32 buf_size, titlekey_buffer_t *titlekey_buffer, u32 remaining, u32 total, u32 *titlekey_count, u32 x, u32 y, u32 *pct, u32 *last_pct, bool is_personalized);
 
 #endif
